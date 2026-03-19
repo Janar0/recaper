@@ -18,6 +18,8 @@ def test_subdirectory_properties(config):
     assert ctx.panels_dir == config.work_dir / "panels"
     assert ctx.analysis_dir == config.work_dir / "analysis"
     assert ctx.script_path == config.work_dir / "script.json"
+    assert ctx.audio_dir == config.work_dir / "audio"
+    assert ctx.video_path == config.work_dir / "output.mp4"
 
 
 def test_ensure_dirs_creates_subdirectories(config):
