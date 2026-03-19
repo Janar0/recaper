@@ -24,6 +24,9 @@ MIN_PANEL_PX = 100  # Minimum panel dimension in pixels
 # Lazy-loaded YOLO model (heavy import)
 _yolo_model = None
 
+# Lazy-loaded OpenAI client for LLM fallback
+_openai_client = None
+
 
 def _get_yolo_model(model_id: str):
     """Load YOLO model from HuggingFace, cached after first call."""
@@ -39,6 +42,17 @@ def _get_yolo_model(model_id: str):
     _yolo_model = YOLO(model_path)
     logger.info("Loaded YOLO model from %s", model_id)
     return _yolo_model
+
+
+def _get_openai_client(config):
+    """Return a cached OpenAI client for OpenRouter."""
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(
+            api_key=config.openrouter_api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+    return _openai_client
 
 
 LLM_PANEL_PROMPT = """\
@@ -162,11 +176,16 @@ class ExtractStage(Stage):
                 if ch < MIN_PANEL_PX or cw < MIN_PANEL_PX:
                     continue
 
+                # Skip low-quality panels (blur/featureless or too dark)
+                if _is_low_quality_panel(crop):
+                    logger.debug("Page %d panel %d: skipping low-quality crop", page_i + 1, panel_j + 1)
+                    continue
+
                 is_text = _is_text_only(crop)
 
                 panel_id = f"p{page_i + 1:03d}_{panel_j + 1:03d}"
-                out_path = ctx.panels_dir / f"{panel_id}.png"
-                cv2.imwrite(str(out_path), crop)
+                out_path = ctx.panels_dir / f"{panel_id}.jpg"
+                cv2.imwrite(str(out_path), crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
                 panel = PanelInfo(
                     panel_id=panel_id,
@@ -205,7 +224,7 @@ def _detect_yolo(image_path: str, config) -> list[tuple[int, int, int, int]]:
         logger.warning("Failed to load YOLO model: %s, falling back", exc)
         return []
 
-    results = model(image_path, conf=config.panel_confidence, verbose=False)
+    results = model(image_path, conf=config.panel_confidence, iou=0.4, verbose=False)
 
     bboxes = []
     for result in results:
@@ -235,40 +254,31 @@ def _detect_manhwa_splits(
     h, w = gray.shape
 
     # For each row, compute mean brightness
-    row_means = np.mean(gray, axis=1)
+    row_means = gray.mean(axis=1)
 
     # Rows that are "empty" (white gap between panels)
     is_gap = row_means > (255 - gap_threshold)
 
-    # Find contiguous gap regions
-    gap_starts = []
-    gap_ends = []
-    in_gap = False
+    # Find contiguous gap regions using vectorized diff
+    padded = np.concatenate(([False], is_gap, [False]))
+    diff = np.diff(padded.astype(np.int8))
+    gap_starts = np.where(diff == 1)[0]
+    gap_ends = np.where(diff == -1)[0]
 
-    for y in range(h):
-        if is_gap[y] and not in_gap:
-            in_gap = True
-            gap_starts.append(y)
-        elif not is_gap[y] and in_gap:
-            in_gap = False
-            gap_ends.append(y)
-    if in_gap:
-        gap_ends.append(h)
+    # Filter by minimum gap height
+    valid = (gap_ends - gap_starts) >= min_gap_height
+    gap_starts = gap_starts[valid]
+    gap_ends = gap_ends[valid]
 
-    # Filter: only keep gaps wider than min_gap_height
-    split_points = [0]
-    for gs, ge in zip(gap_starts, gap_ends):
-        if (ge - gs) >= min_gap_height:
-            mid = (gs + ge) // 2
-            split_points.append(mid)
-    split_points.append(h)
+    midpoints = (gap_starts + gap_ends) // 2
+    split_points = np.concatenate(([0], midpoints, [h]))
 
     # Create bboxes from split regions
     bboxes = []
     min_area = int(h * w * config.min_panel_area_ratio)
     for i in range(len(split_points) - 1):
-        y1 = split_points[i]
-        y2 = split_points[i + 1]
+        y1 = int(split_points[i])
+        y2 = int(split_points[i + 1])
         panel_h = y2 - y1
         if panel_h * w >= min_area and panel_h >= MIN_PANEL_PX:
             bboxes.append((0, y1, w, panel_h))
@@ -277,7 +287,7 @@ def _detect_manhwa_splits(
 
 
 # ---------------------------------------------------------------------------
-# LLM vision fallback (Gemini Flash — cheap)
+# LLM vision fallback
 # ---------------------------------------------------------------------------
 
 def _detect_panels_llm(
@@ -303,10 +313,7 @@ def _detect_panels_llm(
     # Downscale image to save tokens
     b64 = _downscale_and_encode(page_path, config.llm_max_image_size)
 
-    client = OpenAI(
-        api_key=config.openrouter_api_key,
-        base_url="https://openrouter.ai/api/v1",
-    )
+    client = _get_openai_client(config)
 
     for attempt in range(2):
         try:
@@ -484,22 +491,30 @@ def _sort_panels(
     return result
 
 
-def _autocrop(img: np.ndarray, threshold: int = 15) -> np.ndarray:
-    """Remove white/black borders from a panel image."""
+def _autocrop(img: np.ndarray, threshold: int = 20) -> np.ndarray:
+    """Remove uniform-color borders from a panel image.
+
+    Handles white, black, gray, and any other uniform-color borders
+    by analyzing border strip variance.
+    """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
 
-    edge_mean = np.mean([
-        np.mean(gray[0, :]), np.mean(gray[-1, :]),
-        np.mean(gray[:, 0]), np.mean(gray[:, -1]),
+    # Sample border strips (3px deep on each side)
+    border_depth = max(1, min(3, h // 10, w // 10))
+    borders = np.concatenate([
+        gray[:border_depth, :].ravel(),
+        gray[-border_depth:, :].ravel(),
+        gray[:, :border_depth].ravel(),
+        gray[:, -border_depth:].ravel(),
     ])
 
-    if edge_mean > 200:
-        mask = gray < (255 - threshold)
-    elif edge_mean < 30:
-        mask = gray > threshold
-    else:
+    # If border is not uniform (high variance), no autocrop needed
+    if np.std(borders) > 30:
         return img
+
+    border_val = int(np.median(borders))
+    mask = np.abs(gray.astype(np.int16) - border_val) > threshold
 
     coords = cv2.findNonZero(mask.astype(np.uint8))
     if coords is None:
@@ -510,6 +525,22 @@ def _autocrop(img: np.ndarray, threshold: int = 15) -> np.ndarray:
         return img
 
     return img[y:y + ch, x:x + cw]
+
+
+def _is_low_quality_panel(img: np.ndarray) -> bool:
+    """Check if a panel is too blurry/featureless or too dark to be useful."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Too dark — likely a misdetected solid region
+    if np.mean(gray) < 10:
+        return True
+
+    # Laplacian variance measures "edginess" — very low = blurry/featureless
+    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+    if laplacian_var < 20:
+        return True
+
+    return False
 
 
 def _is_fullpage_result(bboxes: list[tuple[int, int, int, int]], page_w: int, page_h: int) -> bool:

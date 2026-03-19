@@ -25,24 +25,32 @@ _OVERSCAN = 0.07  # 7% overscan gives room to pan without zoom appearing
 def _compose_frame(
     panel_img: Image.Image, width: int, height: int, panel_idx: int = 0
 ) -> Image.Image:
-    """Create blurred background + sharp panel slightly off-center, with overscan padding."""
+    """Create blurred background + sharp panel slightly off-center, with overscan padding.
+
+    Uses a single blur pass at overscan size to avoid redundant computation.
+    """
     bg_ratio = panel_img.width / panel_img.height
     target_ratio = width / height
 
-    # Background: scale to fill canvas, crop center, heavy blur
-    if bg_ratio > target_ratio:
-        bh = height
-        bw = int(height * bg_ratio)
+    # Compute overscan dimensions
+    ow = int(width * (1 + _OVERSCAN))
+    oh = int(height * (1 + _OVERSCAN))
+
+    # Background: scale to fill overscan canvas, crop center, single heavy blur
+    bg_ow_ratio = ow / oh
+    if bg_ratio > bg_ow_ratio:
+        bh = oh
+        bw = int(oh * bg_ratio)
     else:
-        bw = width
-        bh = int(width / bg_ratio)
+        bw = ow
+        bh = int(ow / bg_ratio)
     bg = panel_img.resize((bw, bh), Image.LANCZOS)
-    bx = (bw - width) // 2
-    by = (bh - height) // 2
-    bg = bg.crop((bx, by, bx + width, by + height))
+    bx = (bw - ow) // 2
+    by = (bh - oh) // 2
+    bg = bg.crop((bx, by, bx + ow, by + oh))
     bg = bg.filter(ImageFilter.GaussianBlur(radius=30))
 
-    # Foreground: scale panel to fit within frame
+    # Foreground: scale panel to fit within the non-overscan area
     if bg_ratio > target_ratio:
         fw = width
         fh = int(width / bg_ratio)
@@ -68,24 +76,15 @@ def _compose_frame(
     x_off = max(0, min(offsets[direction][0], gap_x))
     y_off = max(0, min(offsets[direction][1], gap_y))
 
-    canvas = bg.copy()
-    canvas.paste(fg, (x_off, y_off))
-
-    # Expand canvas by OVERSCAN on all sides (extend blurred bg edges)
-    ow = int(width * (1 + _OVERSCAN))
-    oh = int(height * (1 + _OVERSCAN))
-    big = Image.new("RGB", (ow, oh), (0, 0, 0))
-    # Tile-extend the blurred bg
-    bg_big = panel_img.resize((ow, oh), Image.LANCZOS)
-    bg_big = bg_big.filter(ImageFilter.GaussianBlur(radius=30))
-    big.paste(bg_big, (0, 0))
+    # Paste foreground onto overscan canvas (offset by overscan padding)
     pad_x = (ow - width) // 2
     pad_y = (oh - height) // 2
-    big.paste(canvas, (pad_x, pad_y))
-    return big
+    bg.paste(fg, (pad_x + x_off, pad_y + y_off))
+
+    return bg
 
 
-def _pan_filter(panel_idx: int, frames: int, width: int, height: int) -> str:
+def _pan_filter(panel_idx: int, frames: int, width: int, height: int, fps: int = 30) -> str:
     """Pure pan (no zoom) with smooth ease-in-out. Source must be _OVERSCAN larger."""
     if frames < 2:
         return f"scale={width}:{height}"
@@ -115,7 +114,7 @@ def _pan_filter(panel_idx: int, frames: int, width: int, height: int) -> str:
 
     return (
         f"zoompan=z={z:.5f}:x='{x}':y='{y}'"
-        f":d={frames}:s={width}x{height}:fps=25"
+        f":d={frames}:s={width}x{height}:fps={fps}"
     )
 
 
@@ -148,6 +147,7 @@ class RenderStage(Stage):
 
         cfg = ctx.config
         W, H = cfg.video_width, cfg.video_height
+        fps = cfg.video_fps
 
         scenes = ctx.script.scenes
         # Build audio lookup: panel_id → segment (or scene_id → segment for legacy)
@@ -210,7 +210,7 @@ class RenderStage(Stage):
                     if img_path and img_path.exists() and audio_seg:
                         clip_path = self._render_panel_clip(
                             img_path, audio_seg, global_idx,
-                            cfg.ken_burns_zoom, W, H, tmp,
+                            cfg.ken_burns_zoom, W, H, tmp, fps,
                         )
                     elif audio_seg:
                         # Black frame fallback
@@ -218,7 +218,7 @@ class RenderStage(Stage):
                         Image.new("RGB", (W, H), (0, 0, 0)).save(str(black))
                         clip_path = self._render_panel_clip(
                             black, audio_seg, global_idx,
-                            1.0, W, H, tmp,
+                            1.0, W, H, tmp, fps,
                         )
 
                     if clip_path.exists():
@@ -250,6 +250,7 @@ class RenderStage(Stage):
         width: int,
         height: int,
         tmp: Path,
+        fps: int = 30,
     ) -> Path:
         # Compose blurred background + sharp panel (slightly off-center + overscan)
         composed_path = tmp / f"composed_{panel_idx:04d}.png"
@@ -258,10 +259,9 @@ class RenderStage(Stage):
         composed.save(str(composed_path))
 
         duration = audio_seg.duration_sec
-        fps = 25
         frames = max(2, int(duration * fps))
 
-        vf = _pan_filter(panel_idx, frames, width, height)
+        vf = _pan_filter(panel_idx, frames, width, height, fps)
 
         video_only = tmp / f"video_{panel_idx:04d}.mp4"
         _ffmpeg(

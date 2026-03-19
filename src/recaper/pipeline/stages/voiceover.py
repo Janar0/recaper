@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import wave
 from pathlib import Path
+
+import numpy as np
 
 from recaper.exceptions import TTSError
 from recaper.models import AudioSegment
@@ -19,6 +22,37 @@ def _wav_duration(path: Path) -> float:
     """Return duration in seconds for a WAV file."""
     with wave.open(str(path), "rb") as wf:
         return wf.getnframes() / wf.getframerate()
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for better TTS prosody and consistency."""
+    # Collapse multiple whitespace/newlines into single space
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Remove markdown artifacts
+    text = re.sub(r'[*_~`]', '', text)
+    # Normalize ellipsis variants (2+ dots → proper ellipsis)
+    text = re.sub(r'\.{2,}', '...', text)
+    # Normalize dashes to natural pauses
+    text = text.replace('—', ', ').replace('–', ', ')
+    # Ensure sentence-ending punctuation for proper prosody
+    if text and text[-1] not in '.!?…':
+        text += '.'
+    return text
+
+
+def _normalize_audio_levels(segments: list[AudioSegment], target_peak: float = 0.9) -> None:
+    """Normalize all audio segments to consistent peak volume."""
+    import soundfile as sf
+
+    for seg in segments:
+        if not seg.audio_path.exists():
+            continue
+        data, sr = sf.read(str(seg.audio_path))
+        peak = float(np.abs(data).max())
+        if peak > 0 and abs(peak - target_peak) > 0.05:
+            data = data * (target_peak / peak)
+            data = np.clip(data, -1.0, 1.0)
+            sf.write(str(seg.audio_path), data, sr)
 
 
 class VoiceoverStage(Stage):
@@ -154,6 +188,9 @@ class VoiceoverStage(Stage):
         )
         done = 0
 
+        # Default sample rate for silence padding (Qwen3-TTS default)
+        default_sr = 24000
+
         for scene in scenes:
             # Determine what to voice: per-panel or per-scene
             items: list[tuple[str, str, str]]  # (text, out_path_stem, panel_id)
@@ -183,24 +220,44 @@ class VoiceoverStage(Stage):
                     done += 1
                     continue
 
-                text = text.strip()
-                if not text:
-                    logger.warning("Empty text for %s, skipping", stem)
+                text = _normalize_text(text.strip())
+                if not text or text == '.':
+                    # Generate silence padding instead of skipping
+                    logger.warning("Empty text for %s, generating silence padding", stem)
+                    silence_duration = cfg.panel_padding_sec
+                    silence = np.zeros(int(silence_duration * default_sr), dtype=np.float32)
+                    sf.write(str(out_path), silence, default_sr)
+                    segments.append(AudioSegment(
+                        scene_id=scene.scene_id,
+                        panel_id=panel_id,
+                        audio_path=out_path,
+                        duration_sec=silence_duration,
+                    ))
                     done += 1
                     continue
 
-                try:
-                    with torch.inference_mode():
-                        wavs, sr = model.generate_custom_voice(
-                            text=text,
-                            language=cfg.tts_language,
-                            speaker=cfg.tts_speaker,
-                        )
-                except Exception as exc:
-                    raise TTSError(f"TTS failed for {stem}: {exc}") from exc
+                # TTS generation with retry
+                max_retries = 2
+                for attempt in range(max_retries + 1):
+                    try:
+                        with torch.inference_mode():
+                            wavs, sr = model.generate_custom_voice(
+                                text=text,
+                                language=cfg.tts_language,
+                                speaker=cfg.tts_speaker,
+                            )
+                        break
+                    except Exception as exc:
+                        if attempt < max_retries:
+                            logger.warning("TTS attempt %d failed for %s: %s, retrying", attempt + 1, stem, exc)
+                            continue
+                        raise TTSError(f"TTS failed for {stem} after {max_retries + 1} attempts: {exc}") from exc
 
-                sf.write(str(out_path), wavs[0], sr)
-                duration = _wav_duration(out_path)
+                audio_data = wavs[0]
+                duration = len(audio_data) / sr
+                sf.write(str(out_path), audio_data, sr)
+                default_sr = sr  # remember actual sample rate for silence padding
+
                 segments.append(AudioSegment(
                     scene_id=scene.scene_id,
                     panel_id=panel_id,
@@ -209,6 +266,9 @@ class VoiceoverStage(Stage):
                 ))
                 logger.info("Voiced %s: %.1fs (%d chars)", stem, duration, len(text))
                 done += 1
+
+        # Normalize audio levels across all segments for consistent volume
+        _normalize_audio_levels(segments)
 
         ctx.audio_segments = segments
 
