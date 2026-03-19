@@ -58,7 +58,7 @@ class VoiceoverStage(Stage):
                 "qwen-tts not installed. Run: pip install 'recaper[tts]'"
             ) from exc
 
-        # Select device
+        # Select device and dtype
         if torch.cuda.is_available():
             device = "cuda:0"
             dtype = torch.bfloat16
@@ -67,14 +67,49 @@ class VoiceoverStage(Stage):
             dtype = torch.float32
             logger.warning("CUDA not available, using CPU for TTS (will be slow)")
 
+        # Enable FlashAttention 2 if available (30-40% speedup)
+        attn_impl = "eager"
+        if torch.cuda.is_available():
+            try:
+                import flash_attn  # noqa: F401
+                attn_impl = "flash_attention_2"
+                logger.info("FlashAttention 2 enabled")
+            except ImportError:
+                # Fall back to SDPA (PyTorch native, still faster than eager)
+                attn_impl = "sdpa"
+                logger.info("Using PyTorch SDPA attention (install flash-attn for best performance)")
+
         try:
             model = Qwen3TTSModel.from_pretrained(
                 cfg.tts_model,
                 device_map=device,
                 dtype=dtype,
+                attn_implementation=attn_impl,
             )
+        except TypeError:
+            # Older qwen-tts versions may not support attn_implementation
+            model = Qwen3TTSModel.from_pretrained(
+                cfg.tts_model,
+                device_map=device,
+                dtype=dtype,
+            )
+            logger.info("Model loaded without custom attention implementation")
         except Exception as exc:
             raise TTSError(f"Failed to load TTS model '{cfg.tts_model}': {exc}") from exc
+
+        # torch.compile for Ada Lovelace — JIT fuses ops for ~20-30% speedup
+        if torch.cuda.is_available() and hasattr(torch, "compile"):
+            try:
+                model = torch.compile(model, mode="reduce-overhead")
+                logger.info("torch.compile enabled (reduce-overhead mode)")
+            except Exception as exc:
+                logger.warning("torch.compile failed, continuing without: %s", exc)
+
+        # Enable CUDA optimizations
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            logger.info("TF32 matmul enabled")
 
         audio_dir = ctx.audio_dir
         audio_dir.mkdir(parents=True, exist_ok=True)
