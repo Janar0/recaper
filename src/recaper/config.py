@@ -56,7 +56,7 @@ class RecaperConfig(BaseSettings):
 
     # TTS (Qwen3-TTS)
     tts_model: str = Field(
-        default="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        default="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         description="HuggingFace model ID for Qwen3-TTS",
     )
     tts_speaker: str = Field(
