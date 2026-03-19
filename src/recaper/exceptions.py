@@ -17,6 +17,14 @@ class LLMError(RecaperError):
     """LLM API call failed."""
 
 
+class TTSError(RecaperError):
+    """TTS synthesis failed."""
+
+
+class RenderError(RecaperError):
+    """Video rendering failed."""
+
+
 class StageError(RecaperError):
     """A pipeline stage failed."""
 

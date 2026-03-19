@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from recaper.config import RecaperConfig
-from recaper.models import ContentType, NarrativeScript, PanelAnalysis, PanelInfo
+from recaper.models import AudioSegment, ContentType, NarrativeScript, PanelAnalysis, PanelInfo, VideoMeta
 
 
 @dataclass
@@ -25,6 +25,8 @@ class PipelineContext:
     panels: list[PanelInfo] = field(default_factory=list)
     analyses: list[PanelAnalysis] = field(default_factory=list)
     script: NarrativeScript | None = None
+    audio_segments: list[AudioSegment] = field(default_factory=list)
+    video: VideoMeta | None = None
 
     @property
     def work_dir(self) -> Path:
@@ -46,7 +48,15 @@ class PipelineContext:
     def script_path(self) -> Path:
         return self.work_dir / "script.json"
 
+    @property
+    def audio_dir(self) -> Path:
+        return self.work_dir / "audio"
+
+    @property
+    def video_path(self) -> Path:
+        return self.work_dir / "output.mp4"
+
     def ensure_dirs(self) -> None:
         """Create all working subdirectories."""
-        for d in (self.pages_dir, self.panels_dir, self.analysis_dir):
+        for d in (self.pages_dir, self.panels_dir, self.analysis_dir, self.audio_dir):
             d.mkdir(parents=True, exist_ok=True)

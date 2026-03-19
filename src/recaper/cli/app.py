@@ -47,8 +47,10 @@ def process(
     from recaper.pipeline.stages.analyze import AnalyzeStage
     from recaper.pipeline.stages.detect import DetectStage
     from recaper.pipeline.stages.extract import ExtractStage
+    from recaper.pipeline.stages.render import RenderStage
     from recaper.pipeline.stages.script import ScriptStage
     from recaper.pipeline.stages.unpack import UnpackStage
+    from recaper.pipeline.stages.voiceover import VoiceoverStage
 
     if not source.exists():
         console.print(f"[red]Файл не найден:[/red] {source}")
@@ -84,6 +86,8 @@ def process(
         ExtractStage(),
         AnalyzeStage(),
         ScriptStage(),
+        VoiceoverStage(),
+        RenderStage(),
     ]
 
     progress = RichProgressReporter(console)
@@ -105,15 +109,20 @@ def process(
 
     # Print summary
     console.print()
-    console.print(Panel(
-        f"[green bold]Готово![/green bold]\n"
-        f"Тип: {ctx.content_type.value}\n"
-        f"Страниц: {len(ctx.pages)}\n"
-        f"Панелей: {len(ctx.panels)}\n"
-        f"Сцен: {len(ctx.script.scenes) if ctx.script else 0}\n"
+    summary_lines = [
+        f"[green bold]Готово![/green bold]",
+        f"Тип: {ctx.content_type.value}",
+        f"Страниц: {len(ctx.pages)}",
+        f"Панелей: {len(ctx.panels)}",
+        f"Сцен: {len(ctx.script.scenes) if ctx.script else 0}",
         f"Сценарий: {ctx.script_path}",
-        title="Результат",
-    ))
+    ]
+    if ctx.audio_segments:
+        total_audio = sum(s.duration_sec for s in ctx.audio_segments)
+        summary_lines.append(f"Аудио: {len(ctx.audio_segments)} сегментов ({total_audio:.1f}с)")
+    if ctx.video:
+        summary_lines.append(f"Видео: {ctx.video.output_path} ({ctx.video.duration_sec:.1f}с)")
+    console.print(Panel("\n".join(summary_lines), title="Результат"))
 
 
 @app.command()

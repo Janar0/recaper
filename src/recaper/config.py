@@ -53,3 +53,31 @@ class RecaperConfig(BaseSettings):
         default=4, ge=1, le=10,
         description="Min importance score (1-10) to include a panel in the recap script",
     )
+
+    # TTS (Qwen3-TTS)
+    tts_model: str = Field(
+        default="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        description="HuggingFace model ID for Qwen3-TTS",
+    )
+    tts_speaker: str = Field(
+        default="Chelsie",
+        description="Preset speaker name for consistent voice",
+    )
+    tts_language: str = Field(
+        default="Russian",
+        description="TTS language (matches Qwen3-TTS language names)",
+    )
+
+    # Video rendering
+    video_fps: int = Field(default=30, description="Output video FPS")
+    video_width: int = Field(default=1920, description="Output video width")
+    video_height: int = Field(default=1080, description="Output video height")
+    ken_burns_zoom: float = Field(
+        default=1.08, description="Ken Burns zoom factor (1.0 = no zoom)",
+    )
+    transition_duration: float = Field(
+        default=0.8, description="Transition duration in seconds",
+    )
+    panel_padding_sec: float = Field(
+        default=0.3, description="Extra silence padding per scene in seconds",
+    )

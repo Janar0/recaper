@@ -6,12 +6,14 @@ import pytest
 from pydantic import ValidationError
 
 from recaper.models import (
+    AudioSegment,
     ContentType,
     NarrativeScript,
     PanelAnalysis,
     PanelInfo,
     ReadingOrder,
     SceneBlock,
+    VideoMeta,
 )
 
 
@@ -76,3 +78,25 @@ def test_reading_order_values():
     assert ReadingOrder.RTL == "rtl"
     assert ReadingOrder.TOP_DOWN == "top_down"
     assert ReadingOrder.LTR == "ltr"
+
+
+def test_audio_segment():
+    seg = AudioSegment(
+        scene_id=1,
+        audio_path=Path("/tmp/scene_001.wav"),
+        duration_sec=5.2,
+    )
+    assert seg.scene_id == 1
+    assert seg.duration_sec == 5.2
+
+
+def test_video_meta():
+    vm = VideoMeta(
+        output_path=Path("/tmp/output.mp4"),
+        duration_sec=60.0,
+        resolution=(1920, 1080),
+        scenes_count=5,
+    )
+    assert vm.resolution == (1920, 1080)
+    data = vm.model_dump()
+    assert data["scenes_count"] == 5

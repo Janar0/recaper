@@ -64,3 +64,20 @@ class NarrativeScript(BaseModel):
     content_type: ContentType
     scenes: list[SceneBlock]
     total_panels: int
+
+
+class AudioSegment(BaseModel):
+    """TTS output for a single scene."""
+
+    scene_id: int
+    audio_path: Path
+    duration_sec: float
+
+
+class VideoMeta(BaseModel):
+    """Metadata for the rendered video."""
+
+    output_path: Path
+    duration_sec: float
+    resolution: tuple[int, int]
+    scenes_count: int
