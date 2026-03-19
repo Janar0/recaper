@@ -31,6 +31,7 @@ ANALYSIS_PROMPT = """\
 4. Звуковые эффекты (SFX)
 5. Настроение / атмосфера
 6. Важность для сюжета (1–10)
+7. Брак (is_defective): true если панель пустая, только рамка/белое пространство, слишком мала или нечитаема
 
 Ответь строго в JSON (без markdown-обёртки):
 {{
@@ -43,7 +44,8 @@ ANALYSIS_PROMPT = """\
       "sfx": ["звук1"],
       "mood": "настроение",
       "visual_notes": "визуальные приёмы",
-      "importance": 7
+      "importance": 7,
+      "is_defective": false
     }}
   ],
   "scene_summary": "краткое описание сцены",
@@ -83,6 +85,12 @@ class AnalyzeStage(Stage):
     def is_complete(self, ctx: PipelineContext) -> bool:
         summary = ctx.analysis_dir / "summary.json"
         return summary.exists()
+
+    def restore(self, ctx: PipelineContext) -> None:
+        summary_path = ctx.analysis_dir / "summary.json"
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+        ctx.analyses = [PanelAnalysis(**d) for d in data["analyses"]]
+        logger.info("Restored %d analyses from %s", len(ctx.analyses), summary_path)
 
     async def run(self, ctx: PipelineContext, progress: ProgressReporter) -> None:
         cfg = ctx.config

@@ -75,6 +75,12 @@ class ExtractStage(Stage):
         meta = ctx.panels_dir / "metadata.json"
         return meta.exists()
 
+    def restore(self, ctx: PipelineContext) -> None:
+        meta_path = ctx.panels_dir / "metadata.json"
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        ctx.panels = [PanelInfo(**d) for d in data]
+        logger.info("Restored %d panels from %s", len(ctx.panels), meta_path)
+
     async def run(self, ctx: PipelineContext, progress: ProgressReporter) -> None:
         ctx.panels_dir.mkdir(parents=True, exist_ok=True)
         reading_order = _reading_order_for(ctx.content_type)

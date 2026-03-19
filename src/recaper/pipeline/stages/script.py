@@ -9,7 +9,7 @@ import time
 from openai import OpenAI
 
 from recaper.exceptions import LLMError
-from recaper.models import NarrativeScript, SceneBlock
+from recaper.models import NarrativeScript, PanelNarration, SceneBlock
 from recaper.pipeline.context import PipelineContext
 from recaper.pipeline.progress import ProgressReporter
 from recaper.pipeline.stages.base import Stage
@@ -17,18 +17,15 @@ from recaper.pipeline.stages.base import Stage
 logger = logging.getLogger(__name__)
 
 SCRIPT_PROMPT = """\
-Ты — профессиональный рассказчик и сценарист. На основе анализа панелей {content_type} "{title}" \
-создай захватывающий нарративный пересказ на русском языке.
+Ты — закадровый голос для видео-пересказа {content_type} "{title}".
 
-Правила:
-- НЕ описывай каждую панель по отдельности. Объединяй их в связные сцены.
-- Используй литературный русский язык, метафоры, сравнения.
-- Передавай эмоции персонажей через нарратив.
-- Вставляй ключевые реплики персонажей в прямую речь (переведённые на русский).
-- Делай паузы в нужных местах для драматического эффекта.
-- Каждый блок нарратива привязан к 1–5 панелям.
-- Длительность одного блока: 10–30 секунд озвучки (примерно 30–90 слов).
-- Общая длительность: примерно 1 минута на 5–8 страниц.
+Правила стиля текста:
+- Пиши так, как будто спокойно рассказываешь другу что происходит.
+- Короткие простые предложения. Настоящее время.
+- ЗАПРЕЩЕНО: восклицательные знаки, многоточия, пафосные слова ("невероятно", "поражает", "мощь", "эпичный").
+- Никакой театральности — это обычный пересказ, не драматический спектакль.
+- Каждой панели — одна реплика (8–20 слов), описывающая что конкретно видно.
+- Диалоги: короткая цитата без лишних слов вокруг.
 
 Вот анализ панелей:
 {analyses_json}
@@ -39,10 +36,12 @@ SCRIPT_PROMPT = """\
   "scenes": [
     {{
       "scene_id": 1,
-      "narration": "Текст нарратива для озвучки...",
-      "panel_ids": ["p001_001", "p001_002"],
+      "panel_narrations": [
+        {{"panel_id": "p001_001", "text": "Короткая реплика для этой панели"}},
+        {{"panel_id": "p001_002", "text": "Реплика для следующей панели"}}
+      ],
       "mood": "tense",
-      "pacing": "slow",
+      "pacing": "normal",
       "transition": "crossfade"
     }}
   ]
@@ -64,6 +63,11 @@ class ScriptStage(Stage):
 
     def is_complete(self, ctx: PipelineContext) -> bool:
         return ctx.script_path.exists()
+
+    def restore(self, ctx: PipelineContext) -> None:
+        data = json.loads(ctx.script_path.read_text(encoding="utf-8"))
+        ctx.script = NarrativeScript(**data)
+        logger.info("Restored script with %d scenes from %s", len(ctx.script.scenes), ctx.script_path)
 
     async def run(self, ctx: PipelineContext, progress: ProgressReporter) -> None:
         cfg = ctx.config
@@ -115,10 +119,19 @@ class ScriptStage(Stage):
         # Parse into NarrativeScript
         scenes = []
         for raw_scene in result.get("scenes", []):
+            raw_pn = raw_scene.get("panel_narrations", [])
+            panel_narrations = [
+                PanelNarration(panel_id=p["panel_id"], text=p["text"])
+                for p in raw_pn if p.get("panel_id") and p.get("text")
+            ]
+            # Derive fallback fields from panel_narrations if present
+            narration = raw_scene.get("narration") or " ".join(pn.text for pn in panel_narrations)
+            panel_ids = raw_scene.get("panel_ids") or [pn.panel_id for pn in panel_narrations]
             scene = SceneBlock(
                 scene_id=raw_scene.get("scene_id", len(scenes) + 1),
-                narration=raw_scene.get("narration", ""),
-                panel_ids=raw_scene.get("panel_ids", []),
+                panel_narrations=panel_narrations,
+                narration=narration,
+                panel_ids=panel_ids,
                 mood=raw_scene.get("mood", "neutral"),
                 pacing=raw_scene.get("pacing", "normal"),
                 transition=raw_scene.get("transition", "crossfade"),
@@ -151,7 +164,7 @@ class ScriptStage(Stage):
                     messages=[
                         {
                             "role": "system",
-                            "content": "Ты — профессиональный сценарист для видео-рекапов манги. Отвечай только на русском языке. Отвечай строго в JSON.",
+                            "content": "Ты — спокойный закадровый комментатор. Пиши простым разговорным языком без пафоса. Без восклицаний и театральности. Отвечай строго в JSON.",
                         },
                         {"role": "user", "content": prompt},
                     ],

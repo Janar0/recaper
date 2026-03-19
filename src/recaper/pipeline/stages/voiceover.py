@@ -30,14 +30,40 @@ class VoiceoverStage(Stage):
     def description(self) -> str:
         return "Озвучка сцен (TTS)"
 
+    def _expected_audio_paths(self, ctx) -> list:
+        """Return expected (path, scene_id, panel_id) tuples based on script."""
+        result = []
+        if not ctx.script:
+            return result
+        for scene in ctx.script.scenes:
+            if scene.panel_narrations:
+                for pn in scene.panel_narrations:
+                    path = ctx.audio_dir / f"panel_{pn.panel_id}.wav"
+                    result.append((path, scene.scene_id, pn.panel_id))
+            else:
+                path = ctx.audio_dir / f"scene_{scene.scene_id:03d}.wav"
+                result.append((path, scene.scene_id, ""))
+        return result
+
     def is_complete(self, ctx: PipelineContext) -> bool:
         if not ctx.script:
             return False
-        audio_dir = ctx.audio_dir
-        return all(
-            (audio_dir / f"scene_{s.scene_id:03d}.wav").exists()
-            for s in ctx.script.scenes
-        )
+        return all(p.exists() for p, _, _ in self._expected_audio_paths(ctx))
+
+    def restore(self, ctx: PipelineContext) -> None:
+        from recaper.models import AudioSegment
+        segments = []
+        for path, scene_id, panel_id in self._expected_audio_paths(ctx):
+            if path.exists():
+                duration = _wav_duration(path)
+                segments.append(AudioSegment(
+                    scene_id=scene_id,
+                    panel_id=panel_id,
+                    audio_path=path,
+                    duration_sec=duration,
+                ))
+        ctx.audio_segments = segments
+        logger.info("Restored %d audio segments from %s", len(segments), ctx.audio_dir)
 
     async def run(self, ctx: PipelineContext, progress: ProgressReporter) -> None:
         if not ctx.script or not ctx.script.scenes:
@@ -67,7 +93,20 @@ class VoiceoverStage(Stage):
             dtype = torch.float32
             logger.warning("CUDA not available, using CPU for TTS (will be slow)")
 
-        # Enable FlashAttention 2 if available (30-40% speedup)
+        if torch.cuda.is_available():
+            # TF32 — faster matmul on Ampere/Ada without precision loss for TTS
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+            # cuDNN autotuner — finds fastest conv algorithm for fixed input sizes
+            torch.backends.cudnn.benchmark = True
+            # Explicit SDPA kernel priority: Flash SDP → Mem-efficient SDP → Math
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(False)
+            logger.info("CUDA optimizations enabled (TF32, cudnn.benchmark, SDPA)")
+
+        # FlashAttention 2 if installed (Linux only), otherwise SDPA
         attn_impl = "eager"
         if torch.cuda.is_available():
             try:
@@ -75,9 +114,8 @@ class VoiceoverStage(Stage):
                 attn_impl = "flash_attention_2"
                 logger.info("FlashAttention 2 enabled")
             except ImportError:
-                # Fall back to SDPA (PyTorch native, still faster than eager)
                 attn_impl = "sdpa"
-                logger.info("Using PyTorch SDPA attention (install flash-attn for best performance)")
+                logger.info("Using PyTorch SDPA attention")
 
         try:
             model = Qwen3TTSModel.from_pretrained(
@@ -87,7 +125,6 @@ class VoiceoverStage(Stage):
                 attn_implementation=attn_impl,
             )
         except TypeError:
-            # Older qwen-tts versions may not support attn_implementation
             model = Qwen3TTSModel.from_pretrained(
                 cfg.tts_model,
                 device_map=device,
@@ -97,76 +134,81 @@ class VoiceoverStage(Stage):
         except Exception as exc:
             raise TTSError(f"Failed to load TTS model '{cfg.tts_model}': {exc}") from exc
 
-        # torch.compile for Ada Lovelace — JIT fuses ops for ~20-30% speedup
+        # torch.compile — try default mode (more compatible than reduce-overhead)
         if torch.cuda.is_available() and hasattr(torch, "compile"):
             try:
-                model = torch.compile(model, mode="reduce-overhead")
-                logger.info("torch.compile enabled (reduce-overhead mode)")
+                model = torch.compile(model, mode="default", fullgraph=False)
+                logger.info("torch.compile enabled")
             except Exception as exc:
-                logger.warning("torch.compile failed, continuing without: %s", exc)
-
-        # Enable CUDA optimizations
-        if torch.cuda.is_available():
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            logger.info("TF32 matmul enabled")
+                logger.warning("torch.compile skipped: %s", exc)
 
         audio_dir = ctx.audio_dir
         audio_dir.mkdir(parents=True, exist_ok=True)
 
+        import soundfile as sf
+
         segments: list[AudioSegment] = []
+        n_segments = sum(
+            len(s.panel_narrations) if s.panel_narrations else 1
+            for s in scenes
+        )
+        done = 0
 
-        for i, scene in enumerate(scenes):
-            progress.on_stage_progress(
-                self.name, i, total,
-                f"Озвучка сцены {i + 1}/{total}...",
-            )
+        for scene in scenes:
+            # Determine what to voice: per-panel or per-scene
+            items: list[tuple[str, str, str]]  # (text, out_path_stem, panel_id)
+            if scene.panel_narrations:
+                items = [
+                    (pn.text, f"panel_{pn.panel_id}", pn.panel_id)
+                    for pn in scene.panel_narrations
+                ]
+            else:
+                items = [(scene.narration, f"scene_{scene.scene_id:03d}", "")]
 
-            out_path = audio_dir / f"scene_{scene.scene_id:03d}.wav"
+            for text, stem, panel_id in items:
+                progress.on_stage_progress(
+                    self.name, done, n_segments,
+                    f"Озвучка {done + 1}/{n_segments}...",
+                )
+                out_path = audio_dir / f"{stem}.wav"
 
-            # Skip if already generated (for resume)
-            if out_path.exists():
+                if out_path.exists():
+                    duration = _wav_duration(out_path)
+                    segments.append(AudioSegment(
+                        scene_id=scene.scene_id,
+                        panel_id=panel_id,
+                        audio_path=out_path,
+                        duration_sec=duration,
+                    ))
+                    done += 1
+                    continue
+
+                text = text.strip()
+                if not text:
+                    logger.warning("Empty text for %s, skipping", stem)
+                    done += 1
+                    continue
+
+                try:
+                    with torch.inference_mode():
+                        wavs, sr = model.generate_custom_voice(
+                            text=text,
+                            language=cfg.tts_language,
+                            speaker=cfg.tts_speaker,
+                        )
+                except Exception as exc:
+                    raise TTSError(f"TTS failed for {stem}: {exc}") from exc
+
+                sf.write(str(out_path), wavs[0], sr)
                 duration = _wav_duration(out_path)
                 segments.append(AudioSegment(
                     scene_id=scene.scene_id,
+                    panel_id=panel_id,
                     audio_path=out_path,
                     duration_sec=duration,
                 ))
-                logger.info("Scene %d already voiced (%.1fs)", scene.scene_id, duration)
-                continue
-
-            text = scene.narration.strip()
-            if not text:
-                logger.warning("Scene %d has empty narration, skipping", scene.scene_id)
-                continue
-
-            try:
-                wavs, sr = model.generate_custom_voice(
-                    text=text,
-                    language=cfg.tts_language,
-                    speaker=cfg.tts_speaker,
-                )
-            except Exception as exc:
-                raise TTSError(
-                    f"TTS failed for scene {scene.scene_id}: {exc}"
-                ) from exc
-
-            # Save WAV
-            import soundfile as sf
-
-            sf.write(str(out_path), wavs[0], sr)
-
-            duration = _wav_duration(out_path)
-            segments.append(AudioSegment(
-                scene_id=scene.scene_id,
-                audio_path=out_path,
-                duration_sec=duration,
-            ))
-
-            logger.info(
-                "Scene %d voiced: %.1fs (%d chars)",
-                scene.scene_id, duration, len(text),
-            )
+                logger.info("Voiced %s: %.1fs (%d chars)", stem, duration, len(text))
+                done += 1
 
         ctx.audio_segments = segments
 

@@ -27,6 +27,7 @@ class PipelineRunner:
         for i, stage in enumerate(self.stages, 1):
             if self.resume and stage.is_complete(ctx):
                 logger.info("Skipping completed stage: %s", stage.name)
+                stage.restore(ctx)
                 progress.on_stage_complete(f"{stage.name} (cached)")
                 continue
 

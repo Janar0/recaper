@@ -44,17 +44,31 @@ class PanelAnalysis(BaseModel):
     mood: str = ""
     visual_notes: str = ""
     importance: int = Field(default=5, ge=1, le=10)
+    is_defective: bool = False  # True if panel has no visual content worth showing
+
+
+class PanelNarration(BaseModel):
+    """Narration text for a single panel."""
+
+    panel_id: str
+    text: str  # TTS narration text for this panel
 
 
 class SceneBlock(BaseModel):
-    """A narrative scene covering 1-5 panels."""
+    """A narrative scene covering 1+ panels, each with its own narration."""
 
     scene_id: int
-    narration: str                   # Text for TTS (Russian)
-    panel_ids: list[str]             # Panel IDs to show during narration
-    mood: str = "neutral"            # For music/animation selection
-    pacing: str = "normal"           # slow / normal / fast
-    transition: str = "crossfade"    # Transition to next scene
+    panel_narrations: list[PanelNarration] = Field(default_factory=list)
+    narration: str = ""              # Fallback full text (computed or legacy)
+    panel_ids: list[str] = Field(default_factory=list)  # Fallback (legacy)
+    mood: str = "neutral"
+    pacing: str = "normal"
+    transition: str = "crossfade"
+
+    def effective_panel_ids(self) -> list[str]:
+        if self.panel_narrations:
+            return [pn.panel_id for pn in self.panel_narrations]
+        return self.panel_ids
 
 
 class NarrativeScript(BaseModel):
@@ -67,9 +81,10 @@ class NarrativeScript(BaseModel):
 
 
 class AudioSegment(BaseModel):
-    """TTS output for a single scene."""
+    """TTS output for a single panel narration (or whole scene as fallback)."""
 
     scene_id: int
+    panel_id: str = ""   # Empty = scene-level audio (legacy fallback)
     audio_path: Path
     duration_sec: float
 

@@ -33,3 +33,6 @@ class Stage(ABC):
     def is_complete(self, ctx: PipelineContext) -> bool:
         """Return True if this stage's output already exists (for --resume)."""
         return False
+
+    def restore(self, ctx: PipelineContext) -> None:
+        """Reload this stage's outputs into *ctx* when the stage is skipped on resume."""

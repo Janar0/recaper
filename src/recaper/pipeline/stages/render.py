@@ -1,15 +1,17 @@
-"""Stage: Compose final video from panels and voiceover audio."""
+"""Stage: Compose final video using ffmpeg — blurred bg, Ken Burns, per-panel audio sync."""
 
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
-import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from recaper.exceptions import RenderError
-from recaper.models import AudioSegment, SceneBlock, VideoMeta
+from recaper.models import AudioSegment, VideoMeta
 from recaper.pipeline.context import PipelineContext
 from recaper.pipeline.progress import ProgressReporter
 from recaper.pipeline.stages.base import Stage
@@ -17,65 +19,111 @@ from recaper.pipeline.stages.base import Stage
 logger = logging.getLogger(__name__)
 
 
-def _fit_image(img: Image.Image, width: int, height: int) -> Image.Image:
-    """Resize and letterbox/pillarbox an image to exactly (width, height)."""
-    img_ratio = img.width / img.height
+_OVERSCAN = 0.07  # 7% overscan gives room to pan without zoom appearing
+
+
+def _compose_frame(
+    panel_img: Image.Image, width: int, height: int, panel_idx: int = 0
+) -> Image.Image:
+    """Create blurred background + sharp panel slightly off-center, with overscan padding."""
+    bg_ratio = panel_img.width / panel_img.height
     target_ratio = width / height
 
-    if img_ratio > target_ratio:
-        # Wider than target → fit by width
-        new_w = width
-        new_h = int(width / img_ratio)
+    # Background: scale to fill canvas, crop center, heavy blur
+    if bg_ratio > target_ratio:
+        bh = height
+        bw = int(height * bg_ratio)
     else:
-        # Taller than target → fit by height
-        new_h = height
-        new_w = int(height * img_ratio)
+        bw = width
+        bh = int(width / bg_ratio)
+    bg = panel_img.resize((bw, bh), Image.LANCZOS)
+    bx = (bw - width) // 2
+    by = (bh - height) // 2
+    bg = bg.crop((bx, by, bx + width, by + height))
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=30))
 
-    img_resized = img.resize((new_w, new_h), Image.LANCZOS)
+    # Foreground: scale panel to fit within frame
+    if bg_ratio > target_ratio:
+        fw = width
+        fh = int(width / bg_ratio)
+    else:
+        fh = height
+        fw = int(height * bg_ratio)
+    fg = panel_img.resize((fw, fh), Image.LANCZOS)
 
-    canvas = Image.new("RGB", (width, height), (0, 0, 0))
-    x_offset = (width - new_w) // 2
-    y_offset = (height - new_h) // 2
-    canvas.paste(img_resized, (x_offset, y_offset))
-    return canvas
+    # Offset panel slightly from center (~15% of available gap) per direction
+    gap_x = width - fw
+    gap_y = height - fh
+    shift_x = int(gap_x * 0.15)
+    shift_y = int(gap_y * 0.15)
+    direction = panel_idx % 4
+    cx = gap_x // 2
+    cy = gap_y // 2
+    offsets = [
+        (cx + shift_x, cy - shift_y),   # 0: right + up
+        (cx - shift_x, cy + shift_y),   # 1: left + down
+        (cx - shift_x, cy - shift_y),   # 2: left + up
+        (cx + shift_x, cy + shift_y),   # 3: right + down
+    ]
+    x_off = max(0, min(offsets[direction][0], gap_x))
+    y_off = max(0, min(offsets[direction][1], gap_y))
+
+    canvas = bg.copy()
+    canvas.paste(fg, (x_off, y_off))
+
+    # Expand canvas by OVERSCAN on all sides (extend blurred bg edges)
+    ow = int(width * (1 + _OVERSCAN))
+    oh = int(height * (1 + _OVERSCAN))
+    big = Image.new("RGB", (ow, oh), (0, 0, 0))
+    # Tile-extend the blurred bg
+    bg_big = panel_img.resize((ow, oh), Image.LANCZOS)
+    bg_big = bg_big.filter(ImageFilter.GaussianBlur(radius=30))
+    big.paste(bg_big, (0, 0))
+    pad_x = (ow - width) // 2
+    pad_y = (oh - height) // 2
+    big.paste(canvas, (pad_x, pad_y))
+    return big
 
 
-def _ken_burns_frame(
-    img_array: np.ndarray,
-    t: float,
-    zoom_factor: float,
-    width: int,
-    height: int,
-) -> np.ndarray:
-    """Apply Ken Burns (slow zoom-in) effect at time fraction t (0..1)."""
-    if zoom_factor <= 1.0:
-        return img_array
+def _pan_filter(panel_idx: int, frames: int, width: int, height: int) -> str:
+    """Pure pan (no zoom) with smooth ease-in-out. Source must be _OVERSCAN larger."""
+    if frames < 2:
+        return f"scale={width}:{height}"
 
-    # Interpolate zoom from 1.0 to zoom_factor
-    current_zoom = 1.0 + (zoom_factor - 1.0) * t
-    h, w = img_array.shape[:2]
+    ow = int(width * (1 + _OVERSCAN))
+    oh = int(height * (1 + _OVERSCAN))
+    pan_x = ow - width   # max horizontal travel
+    pan_y = oh - height  # max vertical travel
+    z = ow / width       # constant zoom factor (= 1+OVERSCAN), makes crop = output size
 
-    crop_w = int(w / current_zoom)
-    crop_h = int(h / current_zoom)
+    # Ease-in-out via cosine: 0→1 smoothly
+    ease = f"(1-cos(3.14159265*on/{frames}))/2"
 
-    x0 = (w - crop_w) // 2
-    y0 = (h - crop_h) // 2
+    direction = panel_idx % 4
+    if direction == 0:    # pan right: x 0→pan_x, y centered
+        x = f"{pan_x}*({ease})"
+        y = f"{pan_y // 2}"
+    elif direction == 1:  # pan down: x centered, y 0→pan_y
+        x = f"{pan_x // 2}"
+        y = f"{pan_y}*({ease})"
+    elif direction == 2:  # pan left: x pan_x→0, y centered
+        x = f"{pan_x}*(1-{ease})"
+        y = f"{pan_y // 2}"
+    else:                 # pan up: x centered, y pan_y→0
+        x = f"{pan_x // 2}"
+        y = f"{pan_y}*(1-{ease})"
 
-    cropped = img_array[y0 : y0 + crop_h, x0 : x0 + crop_w]
-
-    # Resize back to target
-    from PIL import Image as _Img
-
-    pil = _Img.fromarray(cropped)
-    pil = pil.resize((width, height), _Img.LANCZOS)
-    return np.array(pil)
+    return (
+        f"zoompan=z={z:.5f}:x='{x}':y='{y}'"
+        f":d={frames}:s={width}x{height}:fps=25"
+    )
 
 
-def _crossfade_frames(
-    frame_a: np.ndarray, frame_b: np.ndarray, alpha: float
-) -> np.ndarray:
-    """Blend two frames: alpha=0 → frame_a, alpha=1 → frame_b."""
-    return (frame_a.astype(np.float32) * (1 - alpha) + frame_b.astype(np.float32) * alpha).astype(np.uint8)
+def _ffmpeg(*args: str) -> None:
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", *args]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RenderError(f"ffmpeg error:\n{result.stderr[-2000:]}")
 
 
 class RenderStage(Stage):
@@ -95,163 +143,180 @@ class RenderStage(Stage):
             logger.warning("No script or audio segments, skipping render")
             return
 
+        if not shutil.which("ffmpeg"):
+            raise RenderError("ffmpeg not found in PATH")
+
         cfg = ctx.config
         W, H = cfg.video_width, cfg.video_height
-        fps = cfg.video_fps
 
         scenes = ctx.script.scenes
-        audio_map: dict[int, AudioSegment] = {
-            seg.scene_id: seg for seg in ctx.audio_segments
+        # Build audio lookup: panel_id → segment (or scene_id → segment for legacy)
+        panel_audio: dict[str, AudioSegment] = {}
+        scene_audio: dict[int, AudioSegment] = {}
+        for seg in ctx.audio_segments:
+            if seg.panel_id:
+                panel_audio[seg.panel_id] = seg
+            else:
+                scene_audio[seg.scene_id] = seg
+
+        # Build panel image lookup, skipping defective panels
+        defective_ids = {
+            a.panel_id for a in ctx.analyses if a.is_defective
+        } if ctx.analyses else set()
+        panel_paths: dict[str, Path] = {
+            p.panel_id: p.path
+            for p in ctx.panels
+            if p.panel_id not in defective_ids
         }
 
-        # Build panel lookup: panel_id → image path
-        panel_paths: dict[str, Path] = {p.panel_id: p.path for p in ctx.panels}
+        total_clips = sum(
+            len(s.panel_narrations) if s.panel_narrations else len(s.effective_panel_ids())
+            for s in scenes
+        )
+        progress.on_stage_progress(self.name, 0, total_clips, "Подготовка...")
 
-        total_scenes = len(scenes)
-        progress.on_stage_progress(self.name, 0, total_scenes, "Подготовка кадров...")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            all_clips: list[Path] = []
+            global_idx = 0
 
-        try:
-            import moviepy as mpy
-        except ImportError as exc:
-            raise RenderError("moviepy not installed. Run: pip install moviepy") from exc
+            for scene in scenes:
+                # Decide panel/audio pairs
+                if scene.panel_narrations:
+                    pairs = [
+                        (pn.panel_id, panel_audio.get(pn.panel_id))
+                        for pn in scene.panel_narrations
+                    ]
+                else:
+                    seg = scene_audio.get(scene.scene_id)
+                    pids = scene.effective_panel_ids()
+                    dur_each = (seg.duration_sec / len(pids)) if (seg and pids) else 3.0
+                    pairs = [(pid, AudioSegment(
+                        scene_id=scene.scene_id,
+                        panel_id=pid,
+                        audio_path=seg.audio_path if seg else Path(),
+                        duration_sec=dur_each,
+                    )) for pid in pids] if seg else []
 
-        scene_clips: list = []
+                for panel_id, audio_seg in pairs:
+                    progress.on_stage_progress(
+                        self.name, global_idx, total_clips,
+                        f"Рендер {global_idx + 1}/{total_clips}...",
+                    )
 
-        for i, scene in enumerate(scenes):
-            progress.on_stage_progress(
-                self.name, i, total_scenes,
-                f"Рендер сцены {i + 1}/{total_scenes}...",
-            )
+                    img_path = panel_paths.get(panel_id)
+                    clip_path = tmp / f"clip_{global_idx:04d}.mp4"
 
-            audio_seg = audio_map.get(scene.scene_id)
-            if not audio_seg:
-                logger.warning("No audio for scene %d, skipping", scene.scene_id)
-                continue
+                    if img_path and img_path.exists() and audio_seg:
+                        clip_path = self._render_panel_clip(
+                            img_path, audio_seg, global_idx,
+                            cfg.ken_burns_zoom, W, H, tmp,
+                        )
+                    elif audio_seg:
+                        # Black frame fallback
+                        black = tmp / f"black_{global_idx}.png"
+                        Image.new("RGB", (W, H), (0, 0, 0)).save(str(black))
+                        clip_path = self._render_panel_clip(
+                            black, audio_seg, global_idx,
+                            1.0, W, H, tmp,
+                        )
 
-            scene_duration = audio_seg.duration_sec + cfg.panel_padding_sec
+                    if clip_path.exists():
+                        all_clips.append(clip_path)
+                    global_idx += 1
 
-            # Load panel images for this scene
-            images = self._load_scene_panels(scene, panel_paths, W, H)
-            if not images:
-                logger.warning("No panels for scene %d, using black", scene.scene_id)
-                images = [np.zeros((H, W, 3), dtype=np.uint8)]
+            if not all_clips:
+                raise RenderError("No clips generated")
 
-            # Create video clip for this scene with Ken Burns
-            scene_clip = self._make_scene_clip(
-                images, scene_duration, fps, W, H,
-                cfg.ken_burns_zoom, cfg.transition_duration,
-            )
+            progress.on_stage_progress(self.name, total_clips, total_clips, "Сборка...")
+            self._concat_clips(all_clips, ctx.video_path, tmp)
 
-            # Attach audio
-            audio_clip = mpy.AudioFileClip(str(audio_seg.audio_path))
-            scene_clip = scene_clip.with_audio(audio_clip)
+        duration = self._probe_duration(ctx.video_path)
+        ctx.video = VideoMeta(
+            output_path=ctx.video_path,
+            duration_sec=duration,
+            resolution=(W, H),
+            scenes_count=len(scenes),
+        )
+        progress.on_stage_progress(self.name, total_clips, total_clips, "Готово")
+        logger.info("Video rendered: %s (%.1fs)", ctx.video_path, duration)
 
-            scene_clips.append(scene_clip)
+    def _render_panel_clip(
+        self,
+        img_path: Path,
+        audio_seg: AudioSegment,
+        panel_idx: int,
+        zoom: float,   # kept for signature compat, not used (no zoom)
+        width: int,
+        height: int,
+        tmp: Path,
+    ) -> Path:
+        # Compose blurred background + sharp panel (slightly off-center + overscan)
+        composed_path = tmp / f"composed_{panel_idx:04d}.png"
+        img = Image.open(img_path).convert("RGB")
+        composed = _compose_frame(img, width, height, panel_idx)
+        composed.save(str(composed_path))
 
-        if not scene_clips:
-            raise RenderError("No scene clips generated")
+        duration = audio_seg.duration_sec
+        fps = 25
+        frames = max(2, int(duration * fps))
 
-        progress.on_stage_progress(
-            self.name, total_scenes, total_scenes, "Сборка видео..."
+        vf = _pan_filter(panel_idx, frames, width, height)
+
+        video_only = tmp / f"video_{panel_idx:04d}.mp4"
+        _ffmpeg(
+            "-loop", "1",
+            "-i", str(composed_path),
+            "-vf", vf,
+            "-t", f"{duration:.3f}",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            str(video_only),
         )
 
-        # Concatenate all scenes with crossfade transitions
-        td = cfg.transition_duration
-        if len(scene_clips) > 1 and td > 0:
-            final = mpy.concatenate_videoclips(
-                scene_clips, method="compose", padding=-td
+        clip_path = tmp / f"clip_{panel_idx:04d}.mp4"
+
+        if audio_seg.audio_path.exists():
+            _ffmpeg(
+                "-i", str(video_only),
+                "-i", str(audio_seg.audio_path),
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                str(clip_path),
             )
         else:
-            final = mpy.concatenate_videoclips(scene_clips, method="compose")
+            shutil.copy2(video_only, clip_path)
 
-        # Write output
-        output_path = ctx.video_path
-        try:
-            final.write_videofile(
-                str(output_path),
-                fps=fps,
-                codec="libx264",
-                audio_codec="aac",
-                preset="medium",
-                threads=4,
-                logger=None,
-            )
-        except Exception as exc:
-            raise RenderError(f"Failed to write video: {exc}") from exc
-        finally:
-            final.close()
-            for clip in scene_clips:
-                clip.close()
+        return clip_path
 
-        ctx.video = VideoMeta(
-            output_path=output_path,
-            duration_sec=final.duration,
-            resolution=(W, H),
-            scenes_count=len(scene_clips),
+    def _concat_clips(self, clips: list[Path], output: Path, tmp: Path) -> None:
+        if len(clips) == 1:
+            shutil.copy2(clips[0], output)
+            return
+        concat_list = tmp / "concat.txt"
+        concat_list.write_text(
+            "\n".join(f"file '{p}'" for p in clips), encoding="utf-8"
+        )
+        _ffmpeg(
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_list),
+            "-c", "copy",
+            str(output),
         )
 
-        progress.on_stage_progress(self.name, total_scenes, total_scenes, "Готово")
-        logger.info("Video rendered: %s (%.1fs)", output_path, final.duration)
-
-    def _load_scene_panels(
-        self,
-        scene: SceneBlock,
-        panel_paths: dict[str, Path],
-        width: int,
-        height: int,
-    ) -> list[np.ndarray]:
-        """Load and prepare panel images for a scene."""
-        images = []
-        for pid in scene.panel_ids:
-            path = panel_paths.get(pid)
-            if not path or not path.exists():
-                logger.warning("Panel %s not found, skipping", pid)
-                continue
-            try:
-                img = Image.open(path).convert("RGB")
-                img = _fit_image(img, width, height)
-                images.append(np.array(img))
-            except Exception as exc:
-                logger.warning("Failed to load panel %s: %s", pid, exc)
-        return images
-
-    def _make_scene_clip(
-        self,
-        images: list[np.ndarray],
-        duration: float,
-        fps: int,
-        width: int,
-        height: int,
-        zoom: float,
-        transition_dur: float,
-    ):
-        """Create a moviepy clip for one scene with Ken Burns and panel crossfades."""
-        import moviepy as mpy
-
-        n_panels = len(images)
-        panel_dur = duration / n_panels if n_panels > 0 else duration
-
-        sub_clips = []
-        for img_array in images:
-            def make_frame(get_frame, t, _img=img_array, _dur=panel_dur):
-                frac = t / _dur if _dur > 0 else 0
-                return _ken_burns_frame(_img, frac, zoom, width, height)
-
-            clip = mpy.VideoClip(
-                lambda t, _img=img_array, _dur=panel_dur: _ken_burns_frame(
-                    _img, t / _dur if _dur > 0 else 0, zoom, width, height
-                ),
-                duration=panel_dur,
-            ).with_fps(fps)
-            sub_clips.append(clip)
-
-        if len(sub_clips) == 1:
-            return sub_clips[0]
-
-        # Crossfade between panels within a scene
-        inner_td = min(transition_dur * 0.5, panel_dur * 0.3)
-        if inner_td > 0 and len(sub_clips) > 1:
-            return mpy.concatenate_videoclips(
-                sub_clips, method="compose", padding=-inner_td
-            )
-        return mpy.concatenate_videoclips(sub_clips, method="compose")
+    def _probe_duration(self, path: Path) -> float:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True,
+        )
+        try:
+            return float(result.stdout.strip())
+        except ValueError:
+            return 0.0

@@ -40,6 +40,10 @@ class UnpackStage(Stage):
     def is_complete(self, ctx: PipelineContext) -> bool:
         return ctx.pages_dir.exists() and any(ctx.pages_dir.glob("*.png"))
 
+    def restore(self, ctx: PipelineContext) -> None:
+        ctx.pages = sorted(ctx.pages_dir.glob("*.png"))
+        logger.info("Restored %d pages from %s", len(ctx.pages), ctx.pages_dir)
+
     async def run(self, ctx: PipelineContext, progress: ProgressReporter) -> None:
         source = ctx.source_path
 

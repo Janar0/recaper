@@ -60,7 +60,7 @@ class RecaperConfig(BaseSettings):
         description="HuggingFace model ID for Qwen3-TTS",
     )
     tts_speaker: str = Field(
-        default="Chelsie",
+        default="ryan",
         description="Preset speaker name for consistent voice",
     )
     tts_language: str = Field(
@@ -73,7 +73,7 @@ class RecaperConfig(BaseSettings):
     video_width: int = Field(default=1920, description="Output video width")
     video_height: int = Field(default=1080, description="Output video height")
     ken_burns_zoom: float = Field(
-        default=1.08, description="Ken Burns zoom factor (1.0 = no zoom)",
+        default=1.05, description="Ken Burns zoom factor (1.0 = no zoom)",
     )
     transition_duration: float = Field(
         default=0.8, description="Transition duration in seconds",
