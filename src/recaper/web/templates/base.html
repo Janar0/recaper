@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}recaper{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container navbar-inner">
+            <a href="/" class="logo">recaper <span class="version">v{{ version }}</span></a>
+            <div class="nav-links">
+                <a href="/">Задания</a>
+                <a href="/config/view">Настройки</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <div class="container">recaper v{{ version }} — manga/manhwa recap video generator</div>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

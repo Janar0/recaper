@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}recaper — Настройки{% endblock %}
+
+{% block content %}
+<section class="section">
+    <h1>Текущая конфигурация</h1>
+    <p class="hint">Настройки задаются через переменные окружения с префиксом <code>RECAPER_</code> или файл <code>.env</code></p>
+
+    <div class="config-grid">
+        <div class="config-section">
+            <h3>LLM / OpenRouter</h3>
+            <div class="config-table">
+                <div class="config-row">
+                    <span class="config-key">Модель</span>
+                    <span class="config-val">{{ config.openrouter_model }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">OCR модель</span>
+                    <span class="config-val">{{ config.ocr_model }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Температура</span>
+                    <span class="config-val">{{ config.llm_temperature }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Размер батча</span>
+                    <span class="config-val">{{ config.llm_batch_size }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Макс. ретраев</span>
+                    <span class="config-val">{{ config.llm_max_retries }}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Детекция панелей</h3>
+            <div class="config-table">
+                <div class="config-row">
+                    <span class="config-key">Детектор</span>
+                    <span class="config-val">{{ config.panel_detector }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Уверенность</span>
+                    <span class="config-val">{{ config.panel_confidence }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Мин. важность</span>
+                    <span class="config-val">{{ config.min_panel_importance }}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Озвучка (TTS)</h3>
+            <div class="config-table">
+                <div class="config-row">
+                    <span class="config-key">Модель</span>
+                    <span class="config-val">{{ config.tts_model }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Диктор</span>
+                    <span class="config-val">{{ config.tts_speaker }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Язык TTS</span>
+                    <span class="config-val">{{ config.tts_language }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Язык нарратива</span>
+                    <span class="config-val">{{ config.language }}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Видео</h3>
+            <div class="config-table">
+                <div class="config-row">
+                    <span class="config-key">FPS</span>
+                    <span class="config-val">{{ config.video_fps }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Разрешение</span>
+                    <span class="config-val">{{ config.video_width }}x{{ config.video_height }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Ken Burns</span>
+                    <span class="config-val">{{ config.ken_burns_zoom }}</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Переход</span>
+                    <span class="config-val">{{ config.transition_duration }}с</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
