@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}recaper — Задания{% endblock %}
+
+{% block content %}
+<section class="section">
+    <h1>Новое задание</h1>
+    <form id="new-job-form" class="form-card">
+        <div class="form-group">
+            <label for="source">Исходный файл (.cbz/.cbr или папка)</label>
+            <input type="text" id="source" name="source" required
+                   placeholder="/path/to/manga.cbz">
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="title">Название (необязательно)</label>
+                <input type="text" id="title" name="title" placeholder="Глава 1">
+            </div>
+            <div class="form-group">
+                <label for="work_dir">Рабочая папка</label>
+                <input type="text" id="work_dir" name="work_dir" placeholder="авто">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="model">Модель (переопределение)</label>
+                <input type="text" id="model" name="model" placeholder="по умолчанию">
+            </div>
+            <div class="form-group form-check-group">
+                <label>
+                    <input type="checkbox" id="resume" name="resume">
+                    Продолжить с последнего этапа
+                </label>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Запустить</button>
+    </form>
+</section>
+
+<section class="section">
+    <h2>Задания</h2>
+    <div id="jobs-list">
+        {% if jobs %}
+            {% for job in jobs %}
+            <a href="/jobs/{{ job.id }}/view" class="job-card status-{{ job.status.value }}">
+                <div class="job-header">
+                    <span class="job-id">#{{ job.id[:8] }}</span>
+                    <span class="job-status badge badge-{{ job.status.value }}">{{ job.status.value }}</span>
+                </div>
+                <div class="job-source">{{ job.source }}</div>
+                {% if job.title %}<div class="job-title">{{ job.title }}</div>{% endif %}
+                {% if job.status.value == 'running' %}
+                <div class="progress-bar-wrap">
+                    <div class="progress-bar" style="width: {{ job.progress|round(1) }}%"></div>
+                </div>
+                <div class="job-stage">{{ job.current_stage }} — {{ job.progress|round(1) }}%</div>
+                {% endif %}
+                {% if job.error %}<div class="job-error">{{ job.error }}</div>{% endif %}
+            </a>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">Нет заданий. Создайте новое выше.</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/app.js"></script>
+<script>
+    document.getElementById('new-job-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const body = {
+            source: document.getElementById('source').value,
+            title: document.getElementById('title').value,
+            work_dir: document.getElementById('work_dir').value,
+            model: document.getElementById('model').value,
+            resume: document.getElementById('resume').checked,
+        };
+        try {
+            const res = await fetch('/api/jobs', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                alert('Ошибка: ' + (err.detail || res.statusText));
+                return;
+            }
+            const job = await res.json();
+            window.location.href = '/jobs/' + job.id + '/view';
+        } catch (err) {
+            alert('Сетевая ошибка: ' + err.message);
+        }
+    });
+</script>
+{% endblock %}

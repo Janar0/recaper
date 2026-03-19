@@ -126,6 +126,29 @@ def process(
 
 
 @app.command()
+def web(
+    host: str = typer.Option("0.0.0.0", "--host", "-h", help="Bind address"),
+    port: int = typer.Option(8000, "--port", "-p", help="Bind port"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
+) -> None:
+    """Start the web interface."""
+    import uvicorn
+
+    console.print(Panel(
+        f"[bold]recaper web[/bold] v{__version__}\n"
+        f"http://{host}:{port}",
+        title="Web Interface",
+    ))
+    uvicorn.run(
+        "recaper.web.app:create_app",
+        host=host,
+        port=port,
+        reload=reload,
+        factory=True,
+    )
+
+
+@app.command()
 def version() -> None:
     """Show version."""
     console.print(f"recaper v{__version__}")

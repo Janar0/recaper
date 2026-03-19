@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}recaper — Не найдено{% endblock %}
+
+{% block content %}
+<section class="section" style="text-align: center; padding: 4rem 0;">
+    <h1>404</h1>
+    <p>{{ message | default("Страница не найдена") }}</p>
+    <a href="/" class="btn btn-primary" style="margin-top: 1rem;">На главную</a>
+</section>
+{% endblock %}
