@@ -38,7 +38,7 @@ class RecaperConfig(BaseSettings):
         default="mosesb/best-comic-panel-detection",
         description="HuggingFace YOLO model for panel detection",
     )
-    panel_confidence: float = Field(default=0.3, description="YOLO confidence threshold")
+    panel_confidence: float = Field(default=0.45, description="YOLO confidence threshold")
 
     # Language
     language: str = Field(default="ru", description="Narration language")
