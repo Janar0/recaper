@@ -42,19 +42,24 @@ def _get_yolo_model(model_id: str):
 
 
 LLM_PANEL_PROMPT = """\
-Определи все отдельные панели (кадры) на этой странице {content_type}.
+Ты анализируешь страницу {content_type}. Твоя задача — найти ВСЕ отдельные прямоугольные панели (кадры).
 
-Для каждой панели укажи координаты в процентах от размера страницы (0-100):
-- x: левый край
-- y: верхний край
-- w: ширина
-- h: высота
+ОПРЕДЕЛЕНИЕ ПАНЕЛИ: прямоугольная область, ограниченная толстыми чёрными линиями-бордюрами. \
+Между панелями — белые или серые разделители (гаттеры). Порядок чтения: {reading_order_hint}.
 
-Ответь строго в JSON:
-{{"panels": [{{"x": 0, "y": 0, "w": 50, "h": 33}}]}}
+АЛГОРИТМ:
+1. Найди все горизонтальные и вертикальные чёрные линии на странице
+2. Эти линии делят страницу на замкнутые прямоугольники — это панели
+3. Верни КАЖДЫЙ такой прямоугольник, включая большие
 
-Порядок чтения: {reading_order_hint}.
-Если вся страница — одна панель (splash), верни один элемент."""
+СТРОГИЕ ПРАВИЛА:
+- ЗАПРЕЩЕНО возвращать одну панель на 90%+ страницы, если есть видимые линии-разделители
+- ЗАПРЕЩЕНО пропускать крупные панели — даже если одна занимает 50-60% страницы, она всё равно панель
+- Панели не перекрываются
+- Типичная страница: 3-8 панелей
+
+Координаты в процентах от размера страницы (0-100). Ответь ТОЛЬКО JSON:
+{{"panels": [{{"x": левый_край, "y": верхний_край, "w": ширина, "h": высота}}]}}"""
 
 
 class ExtractStage(Stage):
@@ -101,13 +106,25 @@ class ExtractStage(Stage):
                 bboxes = _detect_manhwa_splits(img, ctx.config)
                 method = "vsplit"
 
-            # Fallback: LLM vision if detection gave bad results
+            raw_yolo_bboxes = list(bboxes)  # save before any modification
+            llm_succeeded = False
+
+            # Fallback 1: LLM vision if detection gave bad results
             if _needs_fallback(bboxes, page_w, page_h) and ctx.config.openrouter_api_key:
                 logger.info("Page %d: %s gave %d panels, trying LLM fallback", page_i + 1, method, len(bboxes))
                 llm_bboxes = _detect_panels_llm(ctx, page_path, page_w, page_h, reading_order)
-                if llm_bboxes:
+                if llm_bboxes and not _is_fullpage_result(llm_bboxes, page_w, page_h):
                     bboxes = llm_bboxes
                     method = "llm"
+                    llm_succeeded = True
+
+            # Fallback 2: deduplicate original YOLO boxes — only if LLM didn't help
+            if not llm_succeeded and (_needs_fallback(raw_yolo_bboxes, page_w, page_h) or _is_fullpage_result(bboxes, page_w, page_h)):
+                dedup = _remove_containing_boxes(raw_yolo_bboxes)
+                if len(dedup) >= 2:
+                    logger.info("Page %d: using dedup YOLO (%d panels)", page_i + 1, len(dedup))
+                    bboxes = dedup
+                    method = "dedup"
 
             # Final fallback: whole page
             if not bboxes:
@@ -264,7 +281,7 @@ def _detect_panels_llm(
     page_h: int,
     reading_order: ReadingOrder,
 ) -> list[tuple[int, int, int, int]]:
-    """Use cheap LLM vision (Gemini Flash) to detect panels."""
+    """Use main LLM vision model to detect panels."""
     config = ctx.config
     reading_hint = {
         ReadingOrder.RTL: "справа-налево, сверху-вниз",
@@ -288,7 +305,7 @@ def _detect_panels_llm(
     for attempt in range(2):
         try:
             response = client.chat.completions.create(
-                model=config.ocr_model,  # Gemini Flash — cheap
+                model=config.openrouter_model,  # Use main capable model for accurate detection
                 messages=[{
                     "role": "user",
                     "content": [
@@ -298,22 +315,52 @@ def _detect_panels_llm(
                 }],
                 temperature=0.1,
                 max_tokens=1024,
-                response_format={"type": "json_object"},
             )
-            content = response.choices[0].message.content or "{}"
-            data = json.loads(content)
+            raw = response.choices[0].message.content or "{}"
+            # Strip markdown code fences if present
+            if "```" in raw:
+                lines = raw.split("\n")
+                raw = "\n".join(l for l in lines if not l.strip().startswith("```"))
+            data = json.loads(raw)
+
+            panels_raw = data.get("panels", [])
+            if not panels_raw:
+                continue
+
+            # Auto-detect coordinate system: >100 = pixels of the LLM image, <=100 = percent
+            all_vals = [v for p in panels_raw for v in (p.get("x", 0), p.get("y", 0), p.get("w", 0), p.get("h", 0))]
+            use_pixels = max(all_vals) > 100 if all_vals else False
+
+            if use_pixels:
+                # LLM returned pixel coords of its downscaled image — recover scale
+                max_s = config.llm_max_image_size
+                scale = min(max_s / page_w, max_s / page_h, 1.0)
+                llm_w = max(int(page_w * scale), 1)
+                llm_h = max(int(page_h * scale), 1)
+                def to_orig(px, py, pw, ph):
+                    return (int(px / llm_w * page_w), int(py / llm_h * page_h),
+                            int(pw / llm_w * page_w), int(ph / llm_h * page_h))
+            else:
+                def to_orig(px, py, pw, ph):
+                    return (int(px / 100 * page_w), int(py / 100 * page_h),
+                            int(pw / 100 * page_w), int(ph / 100 * page_h))
 
             bboxes = []
-            for p in data.get("panels", []):
-                x = int(p["x"] / 100 * page_w)
-                y = int(p["y"] / 100 * page_h)
-                w = int(p["w"] / 100 * page_w)
-                h = int(p["h"] / 100 * page_h)
-                if w > 0 and h > 0:
+            for p in panels_raw:
+                x, y, w, h = to_orig(p.get("x", 0), p.get("y", 0), p.get("w", 0), p.get("h", 0))
+                # Expand by 10% from center to compensate for LLM coordinate underestimation
+                dw, dh = int(w * 0.05), int(h * 0.05)
+                x, y, w, h = x - dw, y - dh, w + 2 * dw, h + 2 * dh
+                # Clip to page boundaries
+                x = max(0, min(x, page_w - 1))
+                y = max(0, min(y, page_h - 1))
+                w = min(w, page_w - x)
+                h = min(h, page_h - y)
+                if w > MIN_PANEL_PX and h > MIN_PANEL_PX:
                     bboxes.append((x, y, w, h))
 
             if bboxes:
-                logger.info("LLM (Gemini Flash) detected %d panels", len(bboxes))
+                logger.info("LLM detected %d panels (coord_system=%s)", len(bboxes), "pixels" if use_pixels else "percent")
                 return bboxes
         except Exception as exc:
             logger.warning("LLM panel detection attempt %d failed: %s", attempt + 1, exc)
@@ -341,6 +388,25 @@ def _needs_fallback(
     if total_box_area / page_area < 0.25:
         return True
 
+    # Significant overlap between boxes — YOLO artefact (large box eating smaller ones)
+    if _has_significant_overlap(bboxes):
+        return True
+
+    return False
+
+
+def _has_significant_overlap(bboxes: list[tuple[int, int, int, int]]) -> bool:
+    """Return True if any pair of boxes overlaps by >30% of the smaller box's area."""
+    for i, (x1, y1, w1, h1) in enumerate(bboxes):
+        for j, (x2, y2, w2, h2) in enumerate(bboxes):
+            if i >= j:
+                continue
+            ix = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
+            iy = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+            intersection = ix * iy
+            smaller = min(w1 * h1, w2 * h2)
+            if smaller > 0 and intersection / smaller > 0.3:
+                return True
     return False
 
 
@@ -438,6 +504,41 @@ def _autocrop(img: np.ndarray, threshold: int = 15) -> np.ndarray:
         return img
 
     return img[y:y + ch, x:x + cw]
+
+
+def _is_fullpage_result(bboxes: list[tuple[int, int, int, int]], page_w: int, page_h: int) -> bool:
+    """Return True if bboxes is effectively just one full-page panel (bad LLM result)."""
+    if len(bboxes) != 1:
+        return False
+    x, y, w, h = bboxes[0]
+    return (w * h) / (page_w * page_h) > 0.8
+
+
+def _remove_containing_boxes(
+    bboxes: list[tuple[int, int, int, int]],
+) -> list[tuple[int, int, int, int]]:
+    """Remove large boxes that contain smaller ones (YOLO overlap artefact).
+
+    When YOLO returns a big box that fully contains a smaller correct box,
+    the smaller box is more specific. We remove the large container.
+    """
+    if not bboxes:
+        return bboxes
+    bboxes = sorted(bboxes, key=lambda b: b[2] * b[3])  # ascending area
+    to_remove: set[int] = set()
+    for i, (x1, y1, w1, h1) in enumerate(bboxes):
+        if i in to_remove:
+            continue
+        for j, (x2, y2, w2, h2) in enumerate(bboxes):
+            if i == j or j in to_remove:
+                continue
+            if w2 * h2 <= w1 * h1:
+                continue  # j must be strictly larger
+            ix = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
+            iy = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+            if ix * iy / (w1 * h1) > 0.7:
+                to_remove.add(j)
+    return [b for i, b in enumerate(bboxes) if i not in to_remove]
 
 
 def _is_text_only(img: np.ndarray, white_threshold: float = 0.9) -> bool:

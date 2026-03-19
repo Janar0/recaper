@@ -77,9 +77,19 @@ class ScriptStage(Stage):
 
         progress.on_stage_progress(self.name, 0, 1, "Генерация сценария...")
 
+        # Filter out low-importance panels
+        threshold = cfg.min_panel_importance
+        scored = [a for a in ctx.analyses if a.importance >= threshold]
+        skipped = len(ctx.analyses) - len(scored)
+        if skipped:
+            logger.info("Skipping %d panels with importance < %d", skipped, threshold)
+        if not scored:
+            logger.warning("All panels below importance threshold %d, using all", threshold)
+            scored = ctx.analyses
+
         # Prepare analyses for the prompt
         analyses_data = []
-        for a in ctx.analyses:
+        for a in scored:
             analyses_data.append({
                 "panel_id": a.panel_id,
                 "action": a.action,

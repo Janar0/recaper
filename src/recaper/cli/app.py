@@ -27,6 +27,7 @@ def process(
     model: str = typer.Option("", "--model", "-m", help="OpenRouter model override"),
     batch_size: int = typer.Option(0, "--batch-size", help="Panels per LLM request (0 = use config)"),
     resume: bool = typer.Option(False, "--resume", help="Resume from last completed stage"),
+    min_importance: int = typer.Option(0, "--min-importance", help="Min panel importance (1-10) for recap; 0 = use config default"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging output"),
 ) -> None:
     """Process a manga/manhwa file through the recap pipeline."""
@@ -59,6 +60,8 @@ def process(
         config.openrouter_model = model
     if batch_size > 0:
         config.llm_batch_size = batch_size
+    if min_importance > 0:
+        config.min_panel_importance = min_importance
 
     # Ensure work dir exists (for log file)
     output.mkdir(parents=True, exist_ok=True)

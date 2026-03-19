@@ -55,13 +55,13 @@ class RichProgressReporter:
             self._progress.stop()
             self._progress = None
             self._task_id = None
-        self.console.print(f"  [green]✓[/green] {stage}")
+        self.console.print(f"  [green]OK[/green] {stage}")
 
     def on_error(self, stage: str, error: str) -> None:
         if self._progress is not None:
             self._progress.stop()
             self._progress = None
-        self.console.print(f"  [red]✗[/red] {stage}: {error}")
+        self.console.print(f"  [red]FAIL[/red] {stage}: {error}")
 
 
 class SilentReporter:

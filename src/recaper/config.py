@@ -49,3 +49,7 @@ class RecaperConfig(BaseSettings):
         default=0.02, description="Min panel area as fraction of page"
     )
     panel_padding: int = Field(default=10, description="Padding px when cropping panels")
+    min_panel_importance: int = Field(
+        default=4, ge=1, le=10,
+        description="Min importance score (1-10) to include a panel in the recap script",
+    )
