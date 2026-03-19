@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "recaper"
+version = "0.1.0"
+description = "Manga/manhwa recap video generator"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.9",
+    "rich>=13.0",
+    "opencv-python-headless>=4.8",
+    "Pillow>=10.0",
+    "openai>=1.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "natsort>=8.0",
+    "pyyaml>=6.0",
+    "ultralytics>=8.0",
+    "huggingface_hub>=0.20",
+]
+
+[project.optional-dependencies]
+cbr = ["rarfile>=4.0"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+recaper = "recaper.cli.app:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recaper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
