@@ -66,6 +66,7 @@ class Job:
             "progress": self.progress,
             "error": self.error,
             "result": self.result,
+            "created_at": self.created_at,
         }
 
 
@@ -76,7 +77,7 @@ class WebProgressReporter:
         self._job = job
         self._queue = event_queue
         self._stage_index = 0
-        self._total_stages = 6
+        self._total_stages = 7
 
     def on_stage_start(self, stage: str, description: str) -> None:
         self._stage_index += 1
@@ -87,6 +88,7 @@ class WebProgressReporter:
             "description": description,
             "step": self._stage_index,
             "total_steps": self._total_stages,
+            "timestamp": time.time(),
         })
         self._job.events.append(evt)
         self._queue.put_nowait(evt)
@@ -110,12 +112,13 @@ class WebProgressReporter:
         evt = JobEvent("stage_complete", {
             "stage": stage,
             "progress": round(self._job.progress, 1),
+            "timestamp": time.time(),
         })
         self._job.events.append(evt)
         self._queue.put_nowait(evt)
 
     def on_error(self, stage: str, error: str) -> None:
-        evt = JobEvent("error", {"stage": stage, "error": error})
+        evt = JobEvent("error", {"stage": stage, "error": error, "timestamp": time.time()})
         self._job.events.append(evt)
         self._queue.put_nowait(evt)
 

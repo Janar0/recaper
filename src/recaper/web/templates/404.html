@@ -2,9 +2,9 @@
 {% block title %}recaper — Не найдено{% endblock %}
 
 {% block content %}
-<section class="section" style="text-align: center; padding: 4rem 0;">
-    <h1>404</h1>
-    <p>{{ message | default("Страница не найдена") }}</p>
-    <a href="/" class="btn btn-primary" style="margin-top: 1rem;">На главную</a>
+<section class="section error-page">
+    <div class="error-code">404</div>
+    <p class="error-message">{{ message | default("Страница не найдена") }}</p>
+    <a href="/" class="btn btn-primary">На главную</a>
 </section>
 {% endblock %}

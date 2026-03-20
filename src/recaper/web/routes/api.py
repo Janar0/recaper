@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from recaper.config import RecaperConfig
-from recaper.web.services.jobs import job_manager
+from recaper.web.services.jobs import JobStatus, job_manager
 
 router = APIRouter(tags=["api"])
 
@@ -46,6 +46,19 @@ class ConfigResponse(BaseModel):
 
 
 # --- Jobs ---
+
+
+@router.get("/jobs/stats")
+async def job_stats():
+    """Aggregated job counts for the dashboard."""
+    jobs = job_manager.jobs
+    return {
+        "total": len(jobs),
+        "running": sum(1 for j in jobs if j.status == JobStatus.RUNNING),
+        "completed": sum(1 for j in jobs if j.status == JobStatus.COMPLETED),
+        "failed": sum(1 for j in jobs if j.status == JobStatus.FAILED),
+        "queued": sum(1 for j in jobs if j.status == JobStatus.QUEUED),
+    }
 
 
 @router.get("/jobs")
