@@ -55,6 +55,13 @@ def _get_openai_client(config):
     return _openai_client
 
 
+def release_models():
+    """Release cached YOLO model and OpenAI client to free memory."""
+    global _yolo_model, _openai_client
+    _yolo_model = None
+    _openai_client = None
+
+
 LLM_PANEL_PROMPT = """\
 Ты анализируешь страницу {content_type}. Твоя задача — найти ВСЕ отдельные прямоугольные панели (кадры).
 
@@ -209,6 +216,9 @@ class ExtractStage(Stage):
             m["path"] = str(m["path"])
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
+        # Free YOLO model memory — not needed after extraction
+        release_models()
+
         logger.info("Extracted %d panels from %d pages", len(ctx.panels), len(ctx.pages))
 
 
@@ -311,14 +321,14 @@ def _detect_panels_llm(
     )
 
     # Downscale image to save tokens
-    b64 = _downscale_and_encode(page_path, config.llm_max_image_size)
+    b64 = _downscale_and_encode(page_path, config.llm_max_image_size, config.llm_jpeg_quality)
 
     client = _get_openai_client(config)
 
     for attempt in range(2):
         try:
             response = client.chat.completions.create(
-                model=config.openrouter_model,  # Use main capable model for accurate detection
+                model=config.llm_fallback_model or config.ocr_model,
                 messages=[{
                     "role": "user",
                     "content": [
@@ -427,7 +437,7 @@ def _has_significant_overlap(bboxes: list[tuple[int, int, int, int]]) -> bool:
 # Image helpers
 # ---------------------------------------------------------------------------
 
-def _downscale_and_encode(image_path: Path, max_size: int) -> str:
+def _downscale_and_encode(image_path: Path, max_size: int, jpeg_quality: int = 80) -> str:
     """Downscale image to max_size on longest side, encode as JPEG base64.
 
     This saves significant tokens when sending to LLM.
@@ -446,7 +456,7 @@ def _downscale_and_encode(image_path: Path, max_size: int) -> str:
             img = img.resize((new_w, new_h), Image.LANCZOS)
 
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=80)
+        img.save(buf, format="JPEG", quality=jpeg_quality)
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 

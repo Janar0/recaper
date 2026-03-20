@@ -50,7 +50,7 @@ REVIEW_PROMPT = """\
 
 
 def _build_contact_sheet(
-    panels: list[PanelInfo], max_size: int = 1024
+    panels: list[PanelInfo], max_size: int = 1024, jpeg_quality: int = 85
 ) -> bytes:
     """Build a labeled contact sheet image from panel images.
 
@@ -98,7 +98,7 @@ def _build_contact_sheet(
         draw.text((x, row * cell_h), f"#{i}", fill=(255, 0, 0), font=font)
 
     buf = io.BytesIO()
-    sheet.save(buf, format="JPEG", quality=85)
+    sheet.save(buf, format="JPEG", quality=jpeg_quality)
     return buf.getvalue()
 
 
@@ -155,7 +155,10 @@ class ReviewStage(Stage):
                 continue
 
             # Build contact sheet
-            sheet_bytes = _build_contact_sheet(page_panels, max_size=cfg.llm_max_image_size)
+            sheet_bytes = _build_contact_sheet(
+                page_panels, max_size=cfg.llm_max_image_size,
+                jpeg_quality=cfg.contact_sheet_quality,
+            )
             if not sheet_bytes:
                 continue
 
@@ -238,10 +241,10 @@ class ReviewStage(Stage):
         progress.on_stage_progress(self.name, total_pages, total_pages, "Готово")
 
     def _call_review(self, client: OpenAI, cfg, prompt: str, b64: str) -> dict | None:
-        for attempt in range(2):
+        for attempt in range(cfg.llm_max_retries):
             try:
                 response = client.chat.completions.create(
-                    model=cfg.openrouter_model,
+                    model=cfg.llm_fallback_model or cfg.ocr_model,
                     messages=[{
                         "role": "user",
                         "content": [
@@ -261,8 +264,8 @@ class ReviewStage(Stage):
                 return json.loads(content)
             except Exception as exc:
                 logger.warning("Review LLM call attempt %d failed: %s", attempt + 1, exc)
-                if attempt == 0:
-                    time.sleep(2)
+                if attempt < cfg.llm_max_retries - 1:
+                    time.sleep(2 ** (attempt + 1))
         return None
 
     @staticmethod
