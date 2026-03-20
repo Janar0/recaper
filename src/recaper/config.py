@@ -26,6 +26,10 @@ class RecaperConfig(BaseSettings):
         default="google/gemini-2.0-flash-001",
         description="Cheap vision model for OCR and panel fallback detection",
     )
+    llm_fallback_model: str = Field(
+        default="",
+        description="Model for LLM panel fallback detection (defaults to ocr_model if empty)",
+    )
     llm_temperature: float = 0.7
     llm_batch_size: int = Field(default=4, description="Panels per LLM request")
     llm_max_retries: int = 3
@@ -34,6 +38,14 @@ class RecaperConfig(BaseSettings):
     )
     llm_annotated_image_size: int = Field(
         default=512, description="Max dimension (px) for annotated page images sent to LLM during analysis",
+    )
+    llm_jpeg_quality: int = Field(
+        default=80, ge=10, le=100,
+        description="JPEG quality for images sent to LLM (lower = fewer tokens, saves cost)",
+    )
+    contact_sheet_quality: int = Field(
+        default=85, ge=10, le=100,
+        description="JPEG quality for review contact sheets",
     )
     analyze_max_aspect_ratio: float = Field(
         default=5.0, description="Max page aspect ratio before splitting into vertical chunks",
@@ -76,6 +88,9 @@ class RecaperConfig(BaseSettings):
     tts_instruct: str = Field(
         default="Говори спокойно и ровно, как диктор новостей. Без лишних эмоций, без драмы, без пафоса. Умеренный темп.",
         description="Natural-language instruction for TTS emotion/style control (Qwen3-TTS instruct parameter)",
+    )
+    tts_max_retries: int = Field(
+        default=2, description="Max retry attempts for TTS generation per segment",
     )
 
     # Video rendering

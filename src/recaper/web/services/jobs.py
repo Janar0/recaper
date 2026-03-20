@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -52,6 +53,7 @@ class Job:
     error: str = ""
     events: list[JobEvent] = field(default_factory=list)
     result: dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -135,6 +137,21 @@ class JobManager:
     def event_queue(self, job_id: str) -> asyncio.Queue[JobEvent] | None:
         return self._queues.get(job_id)
 
+    def cleanup(self, max_age_hours: int = 24) -> int:
+        """Remove completed/failed jobs older than max_age_hours."""
+        cutoff = time.time() - max_age_hours * 3600
+        stale = [
+            jid for jid, j in self._jobs.items()
+            if j.status in (JobStatus.COMPLETED, JobStatus.FAILED)
+            and j.created_at < cutoff
+        ]
+        for jid in stale:
+            del self._jobs[jid]
+            self._queues.pop(jid, None)
+        if stale:
+            logger.info("Cleaned up %d old jobs", len(stale))
+        return len(stale)
+
     def create_job(
         self,
         source: Path,
@@ -143,6 +160,7 @@ class JobManager:
         model: str = "",
         resume: bool = False,
     ) -> Job:
+        self.cleanup()
         job_id = uuid.uuid4().hex[:12]
         effective_work_dir = work_dir or Path(f"./jobs/{job_id}")
         job = Job(

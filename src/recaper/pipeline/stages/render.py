@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 import subprocess
 import tempfile
@@ -96,7 +97,7 @@ def _pan_filter(panel_idx: int, frames: int, width: int, height: int, fps: int =
     z = ow / width       # constant zoom factor (= 1+OVERSCAN), makes crop = output size
 
     # Ease-in-out via cosine: 0→1 smoothly
-    ease = f"(1-cos(3.14159265*on/{frames}))/2"
+    ease = f"(1-cos({math.pi}*on/{frames}))/2"
 
     direction = panel_idx % 4
     if direction == 0:    # pan right: x 0→pan_x, y centered

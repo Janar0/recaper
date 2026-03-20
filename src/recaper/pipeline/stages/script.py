@@ -29,7 +29,7 @@ SCRIPT_PROMPT = """\
 - Каждой панели — одна реплика (8–20 слов), описывающая что конкретно видно.
 - Диалоги: короткая цитата без лишних слов вокруг.
 
-Вот анализ панелей:
+Вот анализ панелей (id=panel_id, a=action, c=characters, m=mood, i=importance):
 {analyses_json}
 
 Ответь строго в JSON (без markdown-обёртки):
@@ -93,22 +93,22 @@ class ScriptStage(Stage):
             logger.warning("All panels below importance threshold %d, using all", threshold)
             scored = ctx.analyses
 
-        # Prepare analyses for the prompt
+        # Prepare compact analyses for the prompt (shorter keys, truncated action,
+        # no dialogue — it's already reflected in action text). Saves ~40-50% tokens.
         analyses_data = []
         for a in scored:
             analyses_data.append({
-                "panel_id": a.panel_id,
-                "action": a.action,
-                "characters": a.characters,
-                "dialogue": a.dialogue,
-                "mood": a.mood,
-                "importance": a.importance,
+                "id": a.panel_id,
+                "a": a.action[:100] if a.action else "",
+                "c": a.characters,
+                "m": a.mood,
+                "i": a.importance,
             })
 
         prompt = SCRIPT_PROMPT.format(
             content_type=ctx.content_type.value,
             title=ctx.title or "Без названия",
-            analyses_json=json.dumps(analyses_data, ensure_ascii=False, indent=2),
+            analyses_json=json.dumps(analyses_data, ensure_ascii=False, indent=1),
         )
 
         client = OpenAI(

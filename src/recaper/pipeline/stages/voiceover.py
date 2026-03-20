@@ -166,13 +166,15 @@ class VoiceoverStage(Stage):
                 dtype=dtype,
                 attn_implementation=attn_impl,
             )
-        except TypeError:
+        except TypeError as exc:
+            if "attn_implementation" not in str(exc):
+                raise
             model = Qwen3TTSModel.from_pretrained(
                 cfg.tts_model,
                 device_map=device,
                 dtype=dtype,
             )
-            logger.info("Model loaded without custom attention implementation")
+            logger.info("Model loaded without custom attention (kwarg not supported)")
         except Exception as exc:
             raise TTSError(f"Failed to load TTS model '{cfg.tts_model}': {exc}") from exc
 
@@ -183,6 +185,16 @@ class VoiceoverStage(Stage):
                 logger.info("torch.compile enabled")
             except Exception as exc:
                 logger.warning("torch.compile skipped: %s", exc)
+
+        # Warmup: trigger JIT compilation with a short dummy inference
+        with torch.inference_mode():
+            try:
+                model.generate_custom_voice(
+                    text="тест.", language=cfg.tts_language, speaker=cfg.tts_speaker,
+                )
+                logger.info("TTS model warmup complete")
+            except Exception:
+                logger.debug("TTS warmup skipped (non-critical)")
 
         audio_dir = ctx.audio_dir
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -198,57 +210,58 @@ class VoiceoverStage(Stage):
 
         # Default sample rate for silence padding (Qwen3-TTS default)
         default_sr = 24000
+        sr_locked = False  # lock after first real TTS result
 
-        for scene in scenes:
-            # Determine what to voice: per-panel or per-scene
-            items: list[tuple[str, str, str]]  # (text, out_path_stem, panel_id)
-            if scene.panel_narrations:
-                items = [
-                    (pn.text, f"panel_{pn.panel_id}", pn.panel_id)
-                    for pn in scene.panel_narrations
-                ]
-            else:
-                items = [(scene.narration, f"scene_{scene.scene_id:03d}", "")]
+        with torch.inference_mode():
+            for scene in scenes:
+                # Determine what to voice: per-panel or per-scene
+                items: list[tuple[str, str, str]]  # (text, out_path_stem, panel_id)
+                if scene.panel_narrations:
+                    items = [
+                        (pn.text, f"panel_{pn.panel_id}", pn.panel_id)
+                        for pn in scene.panel_narrations
+                    ]
+                else:
+                    items = [(scene.narration, f"scene_{scene.scene_id:03d}", "")]
 
-            for text, stem, panel_id in items:
-                progress.on_stage_progress(
-                    self.name, done, n_segments,
-                    f"Озвучка {done + 1}/{n_segments}...",
-                )
-                out_path = audio_dir / f"{stem}.wav"
+                for text, stem, panel_id in items:
+                    progress.on_stage_progress(
+                        self.name, done, n_segments,
+                        f"Озвучка {done + 1}/{n_segments}...",
+                    )
+                    out_path = audio_dir / f"{stem}.wav"
 
-                if out_path.exists():
-                    duration = _wav_duration(out_path)
-                    segments.append(AudioSegment(
-                        scene_id=scene.scene_id,
-                        panel_id=panel_id,
-                        audio_path=out_path,
-                        duration_sec=duration,
-                    ))
-                    done += 1
-                    continue
+                    if out_path.exists():
+                        duration = _wav_duration(out_path)
+                        segments.append(AudioSegment(
+                            scene_id=scene.scene_id,
+                            panel_id=panel_id,
+                            audio_path=out_path,
+                            duration_sec=duration,
+                        ))
+                        done += 1
+                        continue
 
-                text = _normalize_text(text.strip())
-                if not text or text == '.':
-                    # Generate silence padding instead of skipping
-                    logger.warning("Empty text for %s, generating silence padding", stem)
-                    silence_duration = cfg.panel_padding_sec
-                    silence = np.zeros(int(silence_duration * default_sr), dtype=np.float32)
-                    sf.write(str(out_path), silence, default_sr)
-                    segments.append(AudioSegment(
-                        scene_id=scene.scene_id,
-                        panel_id=panel_id,
-                        audio_path=out_path,
-                        duration_sec=silence_duration,
-                    ))
-                    done += 1
-                    continue
+                    text = _normalize_text(text.strip())
+                    if not text or text == '.':
+                        # Generate silence padding instead of skipping
+                        logger.warning("Empty text for %s, generating silence padding", stem)
+                        silence_duration = cfg.panel_padding_sec
+                        silence = np.zeros(int(silence_duration * default_sr), dtype=np.float32)
+                        sf.write(str(out_path), silence, default_sr)
+                        segments.append(AudioSegment(
+                            scene_id=scene.scene_id,
+                            panel_id=panel_id,
+                            audio_path=out_path,
+                            duration_sec=silence_duration,
+                        ))
+                        done += 1
+                        continue
 
-                # TTS generation with retry
-                max_retries = 2
-                for attempt in range(max_retries + 1):
-                    try:
-                        with torch.inference_mode():
+                    # TTS generation with retry
+                    max_retries = cfg.tts_max_retries
+                    for attempt in range(max_retries + 1):
+                        try:
                             tts_kwargs = dict(
                                 text=text,
                                 language=cfg.tts_language,
@@ -257,26 +270,38 @@ class VoiceoverStage(Stage):
                             if cfg.tts_instruct:
                                 tts_kwargs["instruct"] = cfg.tts_instruct
                             wavs, sr = model.generate_custom_voice(**tts_kwargs)
-                        break
-                    except Exception as exc:
-                        if attempt < max_retries:
-                            logger.warning("TTS attempt %d failed for %s: %s, retrying", attempt + 1, stem, exc)
-                            continue
-                        raise TTSError(f"TTS failed for {stem} after {max_retries + 1} attempts: {exc}") from exc
+                            break
+                        except Exception as exc:
+                            if attempt < max_retries:
+                                logger.warning("TTS attempt %d failed for %s: %s, retrying", attempt + 1, stem, exc)
+                                continue
+                            raise TTSError(f"TTS failed for {stem} after {max_retries + 1} attempts: {exc}") from exc
 
-                audio_data = wavs[0]
-                duration = len(audio_data) / sr
-                sf.write(str(out_path), audio_data, sr)
-                default_sr = sr  # remember actual sample rate for silence padding
+                    audio_data = wavs[0]
+                    duration = len(audio_data) / sr
+                    sf.write(str(out_path), audio_data, sr)
+                    # Lock sample rate from first real TTS result
+                    if not sr_locked:
+                        default_sr = sr
+                        sr_locked = True
 
-                segments.append(AudioSegment(
-                    scene_id=scene.scene_id,
-                    panel_id=panel_id,
-                    audio_path=out_path,
-                    duration_sec=duration,
-                ))
-                logger.info("Voiced %s: %.1fs (%d chars)", stem, duration, len(text))
-                done += 1
+                    segments.append(AudioSegment(
+                        scene_id=scene.scene_id,
+                        panel_id=panel_id,
+                        audio_path=out_path,
+                        duration_sec=duration,
+                    ))
+                    logger.info("Voiced %s: %.1fs (%d chars)", stem, duration, len(text))
+                    done += 1
+
+                    # Periodically free GPU cache
+                    if done % 20 == 0 and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+        # Free TTS model memory
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Normalize audio levels across all segments for consistent volume
         _normalize_audio_levels(segments)
