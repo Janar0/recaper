@@ -32,6 +32,12 @@ class RecaperConfig(BaseSettings):
     llm_max_image_size: int = Field(
         default=1024, description="Max image dimension (px) sent to LLM (downscale to save tokens)",
     )
+    llm_annotated_image_size: int = Field(
+        default=512, description="Max dimension (px) for annotated page images sent to LLM during analysis",
+    )
+    analyze_max_aspect_ratio: float = Field(
+        default=5.0, description="Max page aspect ratio before splitting into vertical chunks",
+    )
 
     # Panel detection
     panel_detector: str = Field(
@@ -66,6 +72,10 @@ class RecaperConfig(BaseSettings):
     tts_language: str = Field(
         default="Russian",
         description="TTS language (matches Qwen3-TTS language names)",
+    )
+    tts_instruct: str = Field(
+        default="Говори спокойно и ровно, как диктор новостей. Без лишних эмоций, без драмы, без пафоса. Умеренный темп.",
+        description="Natural-language instruction for TTS emotion/style control (Qwen3-TTS instruct parameter)",
     )
 
     # Video rendering

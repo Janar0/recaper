@@ -74,7 +74,7 @@ class WebProgressReporter:
         self._job = job
         self._queue = event_queue
         self._stage_index = 0
-        self._total_stages = 7
+        self._total_stages = 6
 
     def on_stage_start(self, stage: str, description: str) -> None:
         self._stage_index += 1
