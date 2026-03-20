@@ -18,6 +18,7 @@ from recaper.pipeline.stages.analyze import AnalyzeStage
 from recaper.pipeline.stages.detect import DetectStage
 from recaper.pipeline.stages.extract import ExtractStage
 from recaper.pipeline.stages.render import RenderStage
+from recaper.pipeline.stages.review import ReviewStage
 from recaper.pipeline.stages.script import ScriptStage
 from recaper.pipeline.stages.unpack import UnpackStage
 from recaper.pipeline.stages.voiceover import VoiceoverStage
@@ -174,6 +175,7 @@ class JobManager:
                 UnpackStage(),
                 DetectStage(),
                 ExtractStage(),
+                ReviewStage(),
                 AnalyzeStage(),
                 ScriptStage(),
                 VoiceoverStage(),

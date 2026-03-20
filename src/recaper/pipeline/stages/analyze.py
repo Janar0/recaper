@@ -24,9 +24,13 @@ ANALYSIS_PROMPT = """\
 
 {context_block}
 
+{characters_block}
+
 Для каждой панели опиши на русском языке:
 1. Что происходит (действие, эмоции персонажей)
-2. Какие персонажи присутствуют (опиши внешность при первом появлении)
+2. Какие персонажи присутствуют — используй ТОЛЬКО имена из реестра выше, если персонаж уже известен. \
+Для НОВОГО персонажа дай имя (или прозвище по внешности) и подробное описание внешности: \
+цвет волос, причёска, цвет глаз, одежда, отличительные черты.
 3. Диалоги (если есть текст — переведи на русский)
 4. Звуковые эффекты (SFX)
 5. Настроение / атмосфера
@@ -48,6 +52,9 @@ ANALYSIS_PROMPT = """\
       "is_defective": false
     }}
   ],
+  "new_characters": {{
+    "Имя персонажа": "подробное описание внешности: цвет волос, причёска, глаза, одежда, особенности"
+  }},
   "scene_summary": "краткое описание сцены",
   "narrative_beat": "exposition / rising_action / climax / falling_action / resolution"
 }}"""
@@ -112,6 +119,8 @@ class AnalyzeStage(Stage):
         batch_size = cfg.llm_batch_size
         batches = [panels[i:i + batch_size] for i in range(0, len(panels), batch_size)]
         previous_summary = ""
+        # Character registry: name → appearance description (accumulated across batches)
+        character_registry: dict[str, str] = {}
         all_analyses: list[PanelAnalysis] = []
 
         ctx.analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -128,12 +137,21 @@ class AnalyzeStage(Stage):
                 else "Это начало главы."
             )
 
+            if character_registry:
+                chars_list = "\n".join(
+                    f"- {name}: {desc}" for name, desc in character_registry.items()
+                )
+                characters_block = f"Известные персонажи (используй эти имена!):\n{chars_list}"
+            else:
+                characters_block = "Персонажи пока не встречались. Опиши внешность каждого нового персонажа подробно."
+
             prompt = ANALYSIS_PROMPT.format(
                 content_type=ctx.content_type.value,
                 title=ctx.title or "Без названия",
                 start_idx=batch[0].reading_order + 1,
                 end_idx=batch[-1].reading_order + 1,
                 context_block=context_block,
+                characters_block=characters_block,
             )
 
             # Build vision messages with panel images
@@ -166,6 +184,14 @@ class AnalyzeStage(Stage):
             batch_analyses = self._parse_response(result, batch)
             all_analyses.extend(batch_analyses)
 
+            # Update character registry with new characters from this batch
+            new_chars = result.get("new_characters", {})
+            if isinstance(new_chars, dict):
+                for name, desc in new_chars.items():
+                    if name and desc and name not in character_registry:
+                        character_registry[name] = desc
+                        logger.debug("New character registered: %s", name)
+
             # Extract summary for next batch context
             if "scene_summary" in result:
                 previous_summary += " " + result.get("scene_summary", "")
@@ -185,6 +211,7 @@ class AnalyzeStage(Stage):
             "total_panels": len(panels),
             "total_batches": len(batches),
             "summary": previous_summary,
+            "character_registry": character_registry,
             "analyses": [a.model_dump() for a in all_analyses],
         }
         summary_path.write_text(

@@ -25,17 +25,25 @@ def _wav_duration(path: Path) -> float:
 
 
 def _normalize_text(text: str) -> str:
-    """Normalize text for better TTS prosody and consistency."""
+    """Normalize text for better TTS prosody and consistency.
+
+    Flattens emotional cues to keep the voice calm and even.
+    """
     # Collapse multiple whitespace/newlines into single space
     text = re.sub(r'\s+', ' ', text).strip()
     # Remove markdown artifacts
     text = re.sub(r'[*_~`]', '', text)
-    # Normalize ellipsis variants (2+ dots → proper ellipsis)
-    text = re.sub(r'\.{2,}', '...', text)
+    # Normalize ellipsis variants (2+ dots → single period for calm read)
+    text = re.sub(r'\.{2,}', '.', text)
+    text = text.replace('…', '.')
+    # Replace exclamation marks with periods (flatten emotion)
+    text = text.replace('!', '.')
     # Normalize dashes to natural pauses
     text = text.replace('—', ', ').replace('–', ', ')
+    # Remove duplicate punctuation (e.g. ".." or ",,")
+    text = re.sub(r'([.,;:?])\1+', r'\1', text)
     # Ensure sentence-ending punctuation for proper prosody
-    if text and text[-1] not in '.!?…':
+    if text and text[-1] not in '.?':
         text += '.'
     return text
 
@@ -241,11 +249,14 @@ class VoiceoverStage(Stage):
                 for attempt in range(max_retries + 1):
                     try:
                         with torch.inference_mode():
-                            wavs, sr = model.generate_custom_voice(
+                            tts_kwargs = dict(
                                 text=text,
                                 language=cfg.tts_language,
                                 speaker=cfg.tts_speaker,
                             )
+                            if cfg.tts_instruct:
+                                tts_kwargs["instruct"] = cfg.tts_instruct
+                            wavs, sr = model.generate_custom_voice(**tts_kwargs)
                         break
                     except Exception as exc:
                         if attempt < max_retries:

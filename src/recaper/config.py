@@ -67,6 +67,10 @@ class RecaperConfig(BaseSettings):
         default="Russian",
         description="TTS language (matches Qwen3-TTS language names)",
     )
+    tts_instruct: str = Field(
+        default="Говори спокойно и ровно, как диктор новостей. Без лишних эмоций, без драмы, без пафоса. Умеренный темп.",
+        description="Natural-language instruction for TTS emotion/style control (Qwen3-TTS instruct parameter)",
+    )
 
     # Video rendering
     video_fps: int = Field(default=30, description="Output video FPS")
