@@ -18,7 +18,6 @@ from recaper.pipeline.stages.analyze import AnalyzeStage
 from recaper.pipeline.stages.detect import DetectStage
 from recaper.pipeline.stages.extract import ExtractStage
 from recaper.pipeline.stages.render import RenderStage
-from recaper.pipeline.stages.review import ReviewStage
 from recaper.pipeline.stages.script import ScriptStage
 from recaper.pipeline.stages.unpack import UnpackStage
 from recaper.pipeline.stages.voiceover import VoiceoverStage
@@ -75,7 +74,7 @@ class WebProgressReporter:
         self._job = job
         self._queue = event_queue
         self._stage_index = 0
-        self._total_stages = 7
+        self._total_stages = 6
 
     def on_stage_start(self, stage: str, description: str) -> None:
         self._stage_index += 1
@@ -175,7 +174,6 @@ class JobManager:
                 UnpackStage(),
                 DetectStage(),
                 ExtractStage(),
-                ReviewStage(),
                 AnalyzeStage(),
                 ScriptStage(),
                 VoiceoverStage(),
