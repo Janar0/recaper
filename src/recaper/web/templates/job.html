@@ -1,6 +1,14 @@
 {% extends "base.html" %}
 {% block title %}recaper — Задание #{{ job.id[:8] }}{% endblock %}
 
+{% block breadcrumbs %}
+<div class="container breadcrumbs">
+    <a href="/">Задания</a>
+    <span class="breadcrumb-sep">/</span>
+    <span class="breadcrumb-current">#{{ job.id[:8] }}</span>
+</div>
+{% endblock %}
+
 {% block content %}
 <section class="section">
     <div class="job-detail-header">
@@ -27,11 +35,33 @@
 </section>
 
 <section class="section">
+    <h2>Пайплайн</h2>
+    <div class="pipeline-stepper" id="pipeline-stepper">
+        {% set stage_keys = ['unpack', 'detect', 'extract', 'analyze', 'script', 'voiceover', 'render'] %}
+        {% set stage_labels = ['Распаковка', 'Детекция', 'Извлечение', 'Анализ', 'Сценарий', 'Озвучка', 'Рендер'] %}
+        {% set stage_icons = ['\U0001F4E6', '\U0001F50D', '\u2702\uFE0F', '\U0001F52C', '\U0001F4DD', '\U0001F399\uFE0F', '\U0001F3AC'] %}
+        {% for i in range(7) %}
+            {% if not loop.first %}
+                <div class="pipeline-connector {% if job.status.value == 'completed' %}completed{% endif %}" data-index="{{ i - 1 }}"></div>
+            {% endif %}
+            <div class="pipeline-step {% if job.status.value == 'completed' %}completed{% endif %}" data-stage="{{ stage_keys[i] }}">
+                <div class="step-icon">{{ stage_icons[i] }}</div>
+                <div class="step-label">{{ stage_labels[i] }}</div>
+            </div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="section">
     <h2>Прогресс</h2>
     <div class="progress-bar-wrap progress-lg">
-        <div class="progress-bar" id="progress-bar" style="width: {{ job.progress|round(1) }}%"></div>
+        <div class="progress-bar {% if job.status.value == 'running' %}animated{% endif %}" id="progress-bar" style="width: {{ job.progress|round(1) }}%"></div>
     </div>
-    <div class="progress-text" id="progress-text">{{ job.progress|round(1) }}%</div>
+    <div class="progress-info">
+        <span class="progress-text" id="progress-text">{{ job.progress|round(1) }}%</span>
+        <span id="elapsed-time" class="elapsed-time"></span>
+    </div>
+    <div class="sub-progress" id="sub-progress" style="display:none"></div>
 
     <div class="stages-list" id="stages-log">
         {% for evt in job.events %}
@@ -39,12 +69,15 @@
             {% if evt.type == 'stage_start' %}
                 <span class="evt-icon">&#9654;</span>
                 <span>{{ evt.data.description }} ({{ evt.data.step }}/{{ evt.data.total_steps }})</span>
+                {% if evt.data.timestamp %}<span class="evt-time">{{ evt.data.timestamp }}</span>{% endif %}
             {% elif evt.type == 'stage_complete' %}
                 <span class="evt-icon evt-ok">&#10003;</span>
                 <span>{{ evt.data.stage }}</span>
+                {% if evt.data.timestamp %}<span class="evt-time">{{ evt.data.timestamp }}</span>{% endif %}
             {% elif evt.type == 'error' %}
                 <span class="evt-icon evt-fail">&#10007;</span>
                 <span>{{ evt.data.stage }}: {{ evt.data.error }}</span>
+                {% if evt.data.timestamp %}<span class="evt-time">{{ evt.data.timestamp }}</span>{% endif %}
             {% elif evt.type == 'done' %}
                 <span class="evt-icon evt-ok">&#9733;</span>
                 <span>Завершено</span>
@@ -57,18 +90,48 @@
 {% if job.result %}
 <section class="section">
     <h2>Результат</h2>
-    <div class="info-grid">
-        {% for key, val in job.result.items() %}
-        <div class="info-item">
-            <span class="info-label">{{ key }}</span>
-            <span class="info-value">{{ val }}</span>
+    {% if job.result.video %}
+    <div class="result-highlight">
+        <span class="result-icon">&#127916;</span>
+        <div>
+            <div class="result-label">Готовое видео</div>
+            <div class="result-path">{{ job.result.video }}</div>
+            {% if job.result.video_duration %}
+            <div class="result-meta">{{ job.result.video_duration|round(1) }} сек</div>
+            {% endif %}
         </div>
-        {% endfor %}
+    </div>
+    {% endif %}
+    <div class="result-stats">
+        {% if job.result.content_type %}
+        <div class="result-stat">
+            <span class="result-stat-number">{{ job.result.content_type }}</span>
+            <span class="result-stat-label">Тип</span>
+        </div>
+        {% endif %}
+        {% if job.result.pages is defined %}
+        <div class="result-stat">
+            <span class="result-stat-number">{{ job.result.pages }}</span>
+            <span class="result-stat-label">Страниц</span>
+        </div>
+        {% endif %}
+        {% if job.result.panels is defined %}
+        <div class="result-stat">
+            <span class="result-stat-number">{{ job.result.panels }}</span>
+            <span class="result-stat-label">Панелей</span>
+        </div>
+        {% endif %}
+        {% if job.result.scenes is defined %}
+        <div class="result-stat">
+            <span class="result-stat-number">{{ job.result.scenes }}</span>
+            <span class="result-stat-label">Сцен</span>
+        </div>
+        {% endif %}
     </div>
 </section>
 {% endif %}
 
-<section class="section">
+<section class="section" id="files-section">
     <h2>Файлы</h2>
     <div id="files-list" class="files-list">
         <div class="empty-state">Загрузка...</div>
@@ -77,62 +140,121 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/app.js"></script>
 <script>
-    const JOB_ID = '{{ job.id }}';
+    var JOB_ID = '{{ job.id }}';
+    var JOB_CREATED_AT = {{ job.created_at }};
+    var currentStage = '{{ job.current_stage }}';
+    var jobStatus = '{{ job.status.value }}';
+
+    // Format server-rendered timestamps
+    document.querySelectorAll('.evt-time').forEach(function(el) {
+        var ts = parseFloat(el.textContent);
+        if (!isNaN(ts)) el.textContent = formatTime(ts);
+    });
+
+    // Update pipeline stepper to match current state
+    updatePipelineStepper(currentStage, jobStatus);
+
+    // Elapsed time counter
+    var elapsedEl = document.getElementById('elapsed-time');
+    function updateElapsed() {
+        if (jobStatus === 'running' || jobStatus === 'queued') {
+            var elapsed = Math.floor(Date.now() / 1000 - JOB_CREATED_AT);
+            elapsedEl.textContent = formatElapsed(elapsed);
+        }
+    }
+    updateElapsed();
+    var elapsedInterval = setInterval(updateElapsed, 1000);
 
     // SSE for real-time progress
-    if (['queued', 'running'].includes('{{ job.status.value }}')) {
-        const es = new EventSource('/api/jobs/' + JOB_ID + '/events');
-        const log = document.getElementById('stages-log');
-        const bar = document.getElementById('progress-bar');
-        const text = document.getElementById('progress-text');
-        const statusBadge = document.getElementById('job-status');
+    if (jobStatus === 'queued' || jobStatus === 'running') {
+        var es = new EventSource('/api/jobs/' + JOB_ID + '/events');
+        var log = document.getElementById('stages-log');
+        var bar = document.getElementById('progress-bar');
+        var progressText = document.getElementById('progress-text');
+        var statusBadge = document.getElementById('job-status');
+        var subProgress = document.getElementById('sub-progress');
 
         function addEvent(type, html) {
-            const div = document.createElement('div');
+            var div = document.createElement('div');
             div.className = 'stage-event evt-' + type;
             div.innerHTML = html;
             log.appendChild(div);
             log.scrollTop = log.scrollHeight;
         }
 
-        es.addEventListener('stage_start', (e) => {
-            const d = JSON.parse(e.data);
+        es.addEventListener('stage_start', function(e) {
+            var d = JSON.parse(e.data);
             bar.style.width = d.step / d.total_steps * 100 + '%';
-            text.textContent = Math.round(d.step / d.total_steps * 100) + '%';
-            addEvent('stage_start', '<span class="evt-icon">&#9654;</span><span>' + d.description + ' (' + d.step + '/' + d.total_steps + ')</span>');
+            progressText.textContent = Math.round(d.step / d.total_steps * 100) + '%';
+            currentStage = d.stage;
+            jobStatus = 'running';
+            updatePipelineStepper(d.stage, 'running');
+            subProgress.style.display = 'none';
+            var timeStr = d.timestamp ? formatTime(d.timestamp) : '';
+            addEvent('stage_start',
+                '<span class="evt-icon">&#9654;</span>' +
+                '<span>' + d.description + ' (' + d.step + '/' + d.total_steps + ')</span>' +
+                (timeStr ? '<span class="evt-time">' + timeStr + '</span>' : '')
+            );
         });
 
-        es.addEventListener('progress', (e) => {
-            const d = JSON.parse(e.data);
+        es.addEventListener('progress', function(e) {
+            var d = JSON.parse(e.data);
             bar.style.width = d.progress + '%';
-            text.textContent = d.progress + '%';
+            progressText.textContent = d.progress + '%';
+            if (d.detail || (d.current && d.total)) {
+                subProgress.style.display = 'block';
+                subProgress.textContent = d.detail || ('\u0428\u0430\u0433 ' + d.current + '/' + d.total);
+            }
         });
 
-        es.addEventListener('stage_complete', (e) => {
-            const d = JSON.parse(e.data);
+        es.addEventListener('stage_complete', function(e) {
+            var d = JSON.parse(e.data);
             bar.style.width = d.progress + '%';
-            text.textContent = d.progress + '%';
-            addEvent('stage_complete', '<span class="evt-icon evt-ok">&#10003;</span><span>' + d.stage + '</span>');
+            progressText.textContent = d.progress + '%';
+            subProgress.style.display = 'none';
+            updatePipelineStepper(d.stage, 'running');
+            var timeStr = d.timestamp ? formatTime(d.timestamp) : '';
+            addEvent('stage_complete',
+                '<span class="evt-icon evt-ok">&#10003;</span>' +
+                '<span>' + d.stage + '</span>' +
+                (timeStr ? '<span class="evt-time">' + timeStr + '</span>' : '')
+            );
         });
 
-        es.addEventListener('done', (e) => {
+        es.addEventListener('done', function(e) {
             bar.style.width = '100%';
-            text.textContent = '100%';
+            bar.classList.remove('animated');
+            progressText.textContent = '100%';
             statusBadge.textContent = 'completed';
             statusBadge.className = 'badge badge-completed';
+            jobStatus = 'completed';
+            updatePipelineStepper('', 'completed');
+            clearInterval(elapsedInterval);
+            updateElapsed();
+            subProgress.style.display = 'none';
             addEvent('done', '<span class="evt-icon evt-ok">&#9733;</span><span>Завершено</span>');
             es.close();
             loadFiles();
+            // Reload page to show results section
+            setTimeout(function() { window.location.reload(); }, 1000);
         });
 
-        es.addEventListener('error', (e) => {
+        es.addEventListener('error', function(e) {
             if (e.data) {
-                const d = JSON.parse(e.data);
+                var d = JSON.parse(e.data);
                 statusBadge.textContent = 'failed';
                 statusBadge.className = 'badge badge-failed';
-                addEvent('error', '<span class="evt-icon evt-fail">&#10007;</span><span>' + (d.error || 'Неизвестная ошибка') + '</span>');
+                jobStatus = 'failed';
+                updatePipelineStepper(currentStage, 'failed');
+                clearInterval(elapsedInterval);
+                bar.classList.remove('animated');
+                subProgress.style.display = 'none';
+                addEvent('error',
+                    '<span class="evt-icon evt-fail">&#10007;</span>' +
+                    '<span>' + (d.error || 'Неизвестная ошибка') + '</span>'
+                );
             }
             es.close();
         });
@@ -140,29 +262,23 @@
 
     // Load files
     async function loadFiles() {
-        const container = document.getElementById('files-list');
+        var container = document.getElementById('files-list');
         try {
-            const res = await fetch('/api/jobs/' + JOB_ID + '/files');
-            const data = await res.json();
+            var res = await fetch('/api/jobs/' + JOB_ID + '/files');
+            var data = await res.json();
             if (!data.files.length) {
-                container.innerHTML = '<div class="empty-state">Нет файлов</div>';
+                container.innerHTML = '<div class="empty-state"><div class="empty-hint">Нет файлов</div></div>';
                 return;
             }
-            container.innerHTML = data.files.map(f =>
-                '<div class="file-item">' +
-                '<span class="file-name">' + f.name + '</span>' +
-                '<span class="file-size">' + formatSize(f.size) + '</span>' +
-                '</div>'
-            ).join('');
-        } catch {
-            container.innerHTML = '<div class="empty-state">Ошибка загрузки файлов</div>';
+            container.innerHTML = data.files.map(function(f) {
+                return '<div class="file-item">' +
+                    '<span class="file-name">' + escapeHtml(f.name) + '</span>' +
+                    '<span class="file-size">' + formatSize(f.size) + '</span>' +
+                    '</div>';
+            }).join('');
+        } catch (e) {
+            container.innerHTML = '<div class="empty-state"><div class="empty-hint">Ошибка загрузки файлов</div></div>';
         }
-    }
-
-    function formatSize(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / 1048576).toFixed(1) + ' MB';
     }
 
     loadFiles();

@@ -1,6 +1,14 @@
 {% extends "base.html" %}
 {% block title %}recaper — Настройки{% endblock %}
 
+{% block breadcrumbs %}
+<div class="container breadcrumbs">
+    <a href="/">Задания</a>
+    <span class="breadcrumb-sep">/</span>
+    <span class="breadcrumb-current">Настройки</span>
+</div>
+{% endblock %}
+
 {% block content %}
 <section class="section">
     <h1>Текущая конфигурация</h1>
@@ -8,7 +16,7 @@
 
     <div class="config-grid">
         <div class="config-section">
-            <h3>LLM / OpenRouter</h3>
+            <h3><span class="config-section-icon">&#129302;</span> LLM / OpenRouter</h3>
             <div class="config-table">
                 <div class="config-row">
                     <span class="config-key">Модель</span>
@@ -19,11 +27,17 @@
                     <span class="config-val">{{ config.ocr_model }}</span>
                 </div>
                 <div class="config-row">
-                    <span class="config-key">Температура</span>
+                    <div>
+                        <span class="config-key">Температура</span>
+                        <div class="config-hint">Креативность генерации (0 = точно, 1 = свободно)</div>
+                    </div>
                     <span class="config-val">{{ config.llm_temperature }}</span>
                 </div>
                 <div class="config-row">
-                    <span class="config-key">Размер батча</span>
+                    <div>
+                        <span class="config-key">Размер батча</span>
+                        <div class="config-hint">Панелей за один запрос к LLM</div>
+                    </div>
                     <span class="config-val">{{ config.llm_batch_size }}</span>
                 </div>
                 <div class="config-row">
@@ -34,25 +48,31 @@
         </div>
 
         <div class="config-section">
-            <h3>Детекция панелей</h3>
+            <h3><span class="config-section-icon">&#128269;</span> Детекция панелей</h3>
             <div class="config-table">
                 <div class="config-row">
                     <span class="config-key">Детектор</span>
                     <span class="config-val">{{ config.panel_detector }}</span>
                 </div>
                 <div class="config-row">
-                    <span class="config-key">Уверенность</span>
+                    <div>
+                        <span class="config-key">Уверенность</span>
+                        <div class="config-hint">Порог уверенности YOLO-детектора</div>
+                    </div>
                     <span class="config-val">{{ config.panel_confidence }}</span>
                 </div>
                 <div class="config-row">
-                    <span class="config-key">Мин. важность</span>
+                    <div>
+                        <span class="config-key">Мин. важность</span>
+                        <div class="config-hint">Панели ниже порога исключаются из рекапа (1-10)</div>
+                    </div>
                     <span class="config-val">{{ config.min_panel_importance }}</span>
                 </div>
             </div>
         </div>
 
         <div class="config-section">
-            <h3>Озвучка (TTS)</h3>
+            <h3><span class="config-section-icon">&#127897;&#65039;</span> Озвучка (TTS)</h3>
             <div class="config-table">
                 <div class="config-row">
                     <span class="config-key">Модель</span>
@@ -74,7 +94,7 @@
         </div>
 
         <div class="config-section">
-            <h3>Видео</h3>
+            <h3><span class="config-section-icon">&#127916;</span> Видео</h3>
             <div class="config-table">
                 <div class="config-row">
                     <span class="config-key">FPS</span>
@@ -85,7 +105,10 @@
                     <span class="config-val">{{ config.video_width }}x{{ config.video_height }}</span>
                 </div>
                 <div class="config-row">
-                    <span class="config-key">Ken Burns</span>
+                    <div>
+                        <span class="config-key">Ken Burns</span>
+                        <div class="config-hint">Коэффициент зума для эффекта панорамирования</div>
+                    </div>
                     <span class="config-val">{{ config.ken_burns_zoom }}</span>
                 </div>
                 <div class="config-row">

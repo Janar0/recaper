@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from recaper import __version__
-from recaper.web.services.jobs import job_manager
+from recaper.web.services.jobs import JobStatus, job_manager
 
 router = APIRouter(tags=["pages"])
 
@@ -17,10 +17,19 @@ def _templates(request: Request):
 @router.get("/")
 async def index(request: Request):
     """Main dashboard — job list and new job form."""
+    jobs_list = list(reversed(job_manager.jobs))
+    stats = {
+        "total": len(jobs_list),
+        "running": sum(1 for j in jobs_list if j.status == JobStatus.RUNNING),
+        "completed": sum(1 for j in jobs_list if j.status == JobStatus.COMPLETED),
+        "failed": sum(1 for j in jobs_list if j.status == JobStatus.FAILED),
+    }
     return _templates(request).TemplateResponse("index.html", {
         "request": request,
         "version": __version__,
-        "jobs": list(reversed(job_manager.jobs)),
+        "jobs": jobs_list,
+        "stats": stats,
+        "current_page": "jobs",
     })
 
 
@@ -37,6 +46,7 @@ async def job_detail(request: Request, job_id: str):
         "request": request,
         "version": __version__,
         "job": job,
+        "current_page": "job_detail",
     })
 
 
@@ -49,4 +59,5 @@ async def config_page(request: Request):
         "request": request,
         "version": __version__,
         "config": cfg,
+        "current_page": "config",
     })

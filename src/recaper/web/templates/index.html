@@ -3,6 +3,27 @@
 
 {% block content %}
 <section class="section">
+    <div class="stats-bar">
+        <div class="stat-card">
+            <span class="stat-number" id="stat-total">{{ stats.total }}</span>
+            <span class="stat-label">Всего</span>
+        </div>
+        <div class="stat-card stat-running">
+            <span class="stat-number" id="stat-running">{{ stats.running }}</span>
+            <span class="stat-label">Выполняется</span>
+        </div>
+        <div class="stat-card stat-completed">
+            <span class="stat-number" id="stat-completed">{{ stats.completed }}</span>
+            <span class="stat-label">Завершено</span>
+        </div>
+        <div class="stat-card stat-failed">
+            <span class="stat-number" id="stat-failed">{{ stats.failed }}</span>
+            <span class="stat-label">Ошибки</span>
+        </div>
+    </div>
+</section>
+
+<section class="section">
     <h1>Новое задание</h1>
     <form id="new-job-form" class="form-card">
         <div class="form-group">
@@ -10,29 +31,36 @@
             <input type="text" id="source" name="source" required
                    placeholder="/path/to/manga.cbz">
         </div>
-        <div class="form-row">
-            <div class="form-group">
-                <label for="title">Название (необязательно)</label>
-                <input type="text" id="title" name="title" placeholder="Глава 1">
+        <details class="advanced-settings">
+            <summary>Дополнительные настройки</summary>
+            <div class="advanced-body">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="title">Название (необязательно)</label>
+                        <input type="text" id="title" name="title" placeholder="Глава 1">
+                    </div>
+                    <div class="form-group">
+                        <label for="work_dir">Рабочая папка</label>
+                        <input type="text" id="work_dir" name="work_dir" placeholder="авто">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="model">Модель (переопределение)</label>
+                        <input type="text" id="model" name="model" placeholder="по умолчанию">
+                    </div>
+                    <div class="form-group form-check-group">
+                        <label>
+                            <input type="checkbox" id="resume" name="resume">
+                            Продолжить с последнего этапа
+                        </label>
+                    </div>
+                </div>
             </div>
-            <div class="form-group">
-                <label for="work_dir">Рабочая папка</label>
-                <input type="text" id="work_dir" name="work_dir" placeholder="авто">
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="form-group">
-                <label for="model">Модель (переопределение)</label>
-                <input type="text" id="model" name="model" placeholder="по умолчанию">
-            </div>
-            <div class="form-group form-check-group">
-                <label>
-                    <input type="checkbox" id="resume" name="resume">
-                    Продолжить с последнего этапа
-                </label>
-            </div>
-        </div>
-        <button type="submit" class="btn btn-primary">Запустить</button>
+        </details>
+        <button type="submit" class="btn btn-primary">
+            <span class="btn-icon">&#9654;</span> Запустить
+        </button>
     </form>
 </section>
 
@@ -41,35 +69,50 @@
     <div id="jobs-list">
         {% if jobs %}
             {% for job in jobs %}
-            <a href="/jobs/{{ job.id }}/view" class="job-card status-{{ job.status.value }}">
+            <a href="/jobs/{{ job.id }}/view" class="job-card">
                 <div class="job-header">
                     <span class="job-id">#{{ job.id[:8] }}</span>
-                    <span class="job-status badge badge-{{ job.status.value }}">{{ job.status.value }}</span>
+                    <span class="badge badge-{{ job.status.value }}">{{ job.status.value }}</span>
                 </div>
                 <div class="job-source">{{ job.source }}</div>
                 {% if job.title %}<div class="job-title">{{ job.title }}</div>{% endif %}
-                {% if job.status.value == 'running' %}
+                {% if job.status.value == 'running' or job.status.value == 'queued' %}
                 <div class="progress-bar-wrap">
-                    <div class="progress-bar" style="width: {{ job.progress|round(1) }}%"></div>
+                    <div class="progress-bar animated" style="width: {{ job.progress|round(1) }}%"></div>
                 </div>
-                <div class="job-stage">{{ job.current_stage }} — {{ job.progress|round(1) }}%</div>
                 {% endif %}
+                <div class="job-meta">
+                    {% if job.status.value == 'running' and job.current_stage %}
+                        <span>{{ job.current_stage }} — {{ job.progress|round(1) }}%</span>
+                    {% endif %}
+                    <span data-created-at="{{ job.created_at }}" class="job-time"></span>
+                </div>
                 {% if job.error %}<div class="job-error">{{ job.error }}</div>{% endif %}
             </a>
             {% endfor %}
         {% else %}
-            <div class="empty-state">Нет заданий. Создайте новое выше.</div>
+            <div class="empty-state">
+                <div class="empty-icon">&#128218;</div>
+                <div class="empty-title">Нет заданий</div>
+                <div class="empty-hint">Создайте новое задание выше, указав путь к файлу манги</div>
+            </div>
         {% endif %}
     </div>
 </section>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/app.js"></script>
 <script>
-    document.getElementById('new-job-form').addEventListener('submit', async (e) => {
+    // Update relative timestamps on initial load
+    document.querySelectorAll('[data-created-at]').forEach(function(el) {
+        var ts = parseFloat(el.getAttribute('data-created-at'));
+        if (ts) el.textContent = timeAgo(ts);
+    });
+
+    // Form submission
+    document.getElementById('new-job-form').addEventListener('submit', async function(e) {
         e.preventDefault();
-        const body = {
+        var body = {
             source: document.getElementById('source').value,
             title: document.getElementById('title').value,
             work_dir: document.getElementById('work_dir').value,
@@ -77,21 +120,25 @@
             resume: document.getElementById('resume').checked,
         };
         try {
-            const res = await fetch('/api/jobs', {
+            var res = await fetch('/api/jobs', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body),
             });
             if (!res.ok) {
-                const err = await res.json();
-                alert('Ошибка: ' + (err.detail || res.statusText));
+                var err = await res.json();
+                toast('Ошибка: ' + (err.detail || res.statusText), 'error');
                 return;
             }
-            const job = await res.json();
+            var job = await res.json();
+            toast('Задание создано', 'success');
             window.location.href = '/jobs/' + job.id + '/view';
         } catch (err) {
-            alert('Сетевая ошибка: ' + err.message);
+            toast('Сетевая ошибка: ' + err.message, 'error');
         }
     });
+
+    // Auto-refresh
+    startJobListRefresh(5000);
 </script>
 {% endblock %}

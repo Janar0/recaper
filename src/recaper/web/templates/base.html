@@ -11,11 +11,13 @@
         <div class="container navbar-inner">
             <a href="/" class="logo">recaper <span class="version">v{{ version }}</span></a>
             <div class="nav-links">
-                <a href="/">Задания</a>
-                <a href="/config/view">Настройки</a>
+                <a href="/" class="nav-link {% if current_page == 'jobs' %}active{% endif %}">Задания</a>
+                <a href="/config/view" class="nav-link {% if current_page == 'config' %}active{% endif %}">Настройки</a>
             </div>
         </div>
     </nav>
+
+    {% block breadcrumbs %}{% endblock %}
 
     <main class="container">
         {% block content %}{% endblock %}
@@ -25,6 +27,8 @@
         <div class="container">recaper v{{ version }} — manga/manhwa recap video generator</div>
     </footer>
 
+    <div id="toast-container" class="toast-container"></div>
+    <script src="/static/js/app.js"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>
