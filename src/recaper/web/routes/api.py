@@ -108,13 +108,16 @@ async def job_events(job_id: str):
     async def generate():
         # Send past events first (replay)
         for evt in job.events:
-            yield f"event: {evt.type}\ndata: {json.dumps(evt.data, ensure_ascii=False)}\n\n"
+            # Map "error" to "job_error" to avoid conflict with native EventSource error event
+            sse_type = "job_error" if evt.type == "error" else evt.type
+            yield f"event: {sse_type}\ndata: {json.dumps(evt.data, ensure_ascii=False)}\n\n"
 
         # Stream new events
         while True:
             try:
                 evt = await asyncio.wait_for(queue.get(), timeout=30.0)
-                yield f"event: {evt.type}\ndata: {json.dumps(evt.data, ensure_ascii=False)}\n\n"
+                sse_type = "job_error" if evt.type == "error" else evt.type
+                yield f"event: {sse_type}\ndata: {json.dumps(evt.data, ensure_ascii=False)}\n\n"
                 if evt.type in ("done", "error"):
                     break
             except asyncio.TimeoutError:
