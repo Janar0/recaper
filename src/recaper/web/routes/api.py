@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -75,7 +76,7 @@ async def create_job(req: JobCreateRequest):
         raise HTTPException(404, f"Source not found: {req.source}")
 
     work_dir = Path(req.work_dir) if req.work_dir else None
-    job = job_manager.create_job(
+    job = await job_manager.create_job(
         source=source,
         title=req.title,
         work_dir=work_dir,
@@ -96,34 +97,47 @@ async def get_job(job_id: str):
 
 @router.get("/jobs/{job_id}/events")
 async def job_events(job_id: str):
-    """SSE stream of real-time job progress events."""
+    """SSE stream of real-time job progress events.
+
+    Uses index-based polling of ``job.events`` instead of an asyncio.Queue
+    so that the event loop is never blocked by the pipeline (which runs in
+    a worker thread) and reconnections replay correctly without duplicates.
+    """
     job = job_manager.get(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
 
-    queue = job_manager.event_queue(job_id)
-    if not queue:
-        raise HTTPException(404, "Event queue not available")
-
     async def generate():
-        # Send past events first (replay)
-        for evt in job.events:
-            # Map "error" to "job_error" to avoid conflict with native EventSource error event
-            sse_type = "job_error" if evt.type == "error" else evt.type
-            yield f"event: {sse_type}\ndata: {json.dumps(evt.data, ensure_ascii=False)}\n\n"
+        idx = 0
+        last_activity = time.monotonic()
 
-        # Stream new events
         while True:
-            try:
-                evt = await asyncio.wait_for(queue.get(), timeout=30.0)
+            # Deliver any new events that appeared since last check
+            delivered = False
+            while idx < len(job.events):
+                evt = job.events[idx]
+                idx += 1
+                # Map "error" to "job_error" to avoid conflict with native EventSource error event
                 sse_type = "job_error" if evt.type == "error" else evt.type
                 yield f"event: {sse_type}\ndata: {json.dumps(evt.data, ensure_ascii=False)}\n\n"
+                delivered = True
+                last_activity = time.monotonic()
                 if evt.type in ("done", "error"):
-                    break
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
+                    return
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+            # Send keepalive every ~15 s to prevent proxies / browsers
+            # from closing the connection
+            if not delivered and time.monotonic() - last_activity > 15:
+                yield ": keepalive\n\n"
+                last_activity = time.monotonic()
+
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- Files ---

@@ -14,7 +14,7 @@ from typing import Any
 from recaper.config import RecaperConfig
 from recaper.pipeline.context import PipelineContext
 from recaper.pipeline.progress import ProgressReporter
-from recaper.pipeline.runner import PipelineRunner
+from recaper.pipeline.runner import PipelineRunner, run_pipeline_sync
 from recaper.pipeline.stages.analyze import AnalyzeStage
 from recaper.pipeline.stages.detect import DetectStage
 from recaper.pipeline.stages.extract import ExtractStage
@@ -71,11 +71,10 @@ class Job:
 
 
 class WebProgressReporter:
-    """Progress reporter that appends events to a Job for SSE streaming."""
+    """Progress reporter that appends events to a Job for SSE polling."""
 
-    def __init__(self, job: Job, event_queue: asyncio.Queue[JobEvent]) -> None:
+    def __init__(self, job: Job) -> None:
         self._job = job
-        self._queue = event_queue
         self._stage_index = 0
         self._total_stages = 7
 
@@ -91,7 +90,6 @@ class WebProgressReporter:
             "timestamp": time.time(),
         })
         self._job.events.append(evt)
-        self._queue.put_nowait(evt)
 
     def on_stage_progress(self, stage: str, current: int, total: int, detail: str = "") -> None:
         base = (self._stage_index - 1) / self._total_stages * 100
@@ -105,7 +103,6 @@ class WebProgressReporter:
             "progress": round(self._job.progress, 1),
         })
         self._job.events.append(evt)
-        self._queue.put_nowait(evt)
 
     def on_stage_complete(self, stage: str) -> None:
         self._job.progress = self._stage_index / self._total_stages * 100
@@ -115,12 +112,10 @@ class WebProgressReporter:
             "timestamp": time.time(),
         })
         self._job.events.append(evt)
-        self._queue.put_nowait(evt)
 
     def on_error(self, stage: str, error: str) -> None:
         evt = JobEvent("error", {"stage": stage, "error": error, "timestamp": time.time()})
         self._job.events.append(evt)
-        self._queue.put_nowait(evt)
 
 
 class JobManager:
@@ -128,7 +123,7 @@ class JobManager:
 
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
-        self._queues: dict[str, asyncio.Queue[JobEvent]] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
 
     @property
     def jobs(self) -> list[Job]:
@@ -136,9 +131,6 @@ class JobManager:
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
-
-    def event_queue(self, job_id: str) -> asyncio.Queue[JobEvent] | None:
-        return self._queues.get(job_id)
 
     def cleanup(self, max_age_hours: int = 24) -> int:
         """Remove completed/failed jobs older than max_age_hours."""
@@ -150,12 +142,12 @@ class JobManager:
         ]
         for jid in stale:
             del self._jobs[jid]
-            self._queues.pop(jid, None)
+            self._tasks.pop(jid, None)
         if stale:
             logger.info("Cleaned up %d old jobs", len(stale))
         return len(stale)
 
-    def create_job(
+    async def create_job(
         self,
         source: Path,
         title: str = "",
@@ -173,13 +165,13 @@ class JobManager:
             work_dir=effective_work_dir,
         )
         self._jobs[job_id] = job
-        self._queues[job_id] = asyncio.Queue()
 
-        asyncio.create_task(self._run(job, model=model, resume=resume))
+        task = asyncio.create_task(self._run(job, model=model, resume=resume))
+        self._tasks[job_id] = task
+        task.add_done_callback(lambda _t: self._tasks.pop(job_id, None))
         return job
 
     async def _run(self, job: Job, model: str = "", resume: bool = False) -> None:
-        queue = self._queues[job.id]
         try:
             job.status = JobStatus.RUNNING
             config = RecaperConfig(work_dir=job.work_dir)
@@ -200,9 +192,14 @@ class JobManager:
                 VoiceoverStage(),
                 RenderStage(),
             ]
-            reporter = WebProgressReporter(job, queue)
-            runner = PipelineRunner(stages, resume=resume)
-            await runner.run(ctx, reporter)
+            reporter = WebProgressReporter(job)
+
+            # Run pipeline in a separate thread so that blocking I/O
+            # (sync OpenAI calls, cv2, subprocess, time.sleep) does not
+            # block the event loop and starve SSE / HTTP handlers.
+            await asyncio.to_thread(
+                run_pipeline_sync, stages, ctx, reporter, resume,
+            )
 
             job.status = JobStatus.COMPLETED
             job.progress = 100.0
@@ -214,13 +211,13 @@ class JobManager:
                 "video": str(ctx.video.output_path) if ctx.video else None,
                 "video_duration": ctx.video.duration_sec if ctx.video else None,
             }
-            queue.put_nowait(JobEvent("done", job.result))
+            job.events.append(JobEvent("done", job.result))
 
         except Exception as exc:
             logger.exception("Job %s failed", job.id)
             job.status = JobStatus.FAILED
             job.error = str(exc)
-            queue.put_nowait(JobEvent("error", {"error": str(exc)}))
+            job.events.append(JobEvent("error", {"error": str(exc)}))
 
 
 # Global instance
