@@ -241,23 +241,32 @@
             setTimeout(function() { window.location.reload(); }, 1000);
         });
 
-        es.addEventListener('error', function(e) {
-            if (e.data) {
-                var d = JSON.parse(e.data);
-                statusBadge.textContent = 'failed';
-                statusBadge.className = 'badge badge-failed';
-                jobStatus = 'failed';
-                updatePipelineStepper(currentStage, 'failed');
-                clearInterval(elapsedInterval);
-                bar.classList.remove('animated');
-                subProgress.style.display = 'none';
-                addEvent('error',
-                    '<span class="evt-icon evt-fail">&#10007;</span>' +
-                    '<span>' + (d.error || 'Неизвестная ошибка') + '</span>'
-                );
-            }
+        es.addEventListener('job_error', function(e) {
+            var d = JSON.parse(e.data);
+            statusBadge.textContent = 'failed';
+            statusBadge.className = 'badge badge-failed';
+            jobStatus = 'failed';
+            updatePipelineStepper(currentStage, 'failed');
+            clearInterval(elapsedInterval);
+            bar.classList.remove('animated');
+            subProgress.style.display = 'none';
+            addEvent('error',
+                '<span class="evt-icon evt-fail">&#10007;</span>' +
+                '<span>' + (d.error || 'Неизвестная ошибка') + '</span>'
+            );
             es.close();
         });
+
+        // Native EventSource errors (connection drops) — let browser auto-reconnect
+        es.onerror = function() {
+            if (es.readyState === EventSource.CLOSED) {
+                // Server closed the connection permanently
+                if (jobStatus === 'queued' || jobStatus === 'running') {
+                    toast('Соединение потеряно, обновите страницу', 'error');
+                }
+            }
+            // readyState === CONNECTING means browser is auto-reconnecting — do nothing
+        };
     }
 
     // Load files
